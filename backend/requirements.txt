@@ -1,0 +1,11 @@
+FastAPI
+requests
+geopandas
+rasterio
+numpy
+scipy
+shapely
+osmnx
+pyproj
+matplotlib
+pystac-client
