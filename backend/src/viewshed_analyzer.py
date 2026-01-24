@@ -92,14 +92,23 @@ def perform_viewshed_analysis(
                 split = _split_viewshed_by_tangent(out_path, easting, northing, tangent)
                 left_area = split.get("left_area")
                 right_area = split.get("right_area")
+                total_left_area = split.get("total_left_area")
+                total_right_area = split.get("total_right_area")
                 left_area_value = float(left_area) if isinstance(left_area, (int, float)) else 0.0
                 right_area_value = float(right_area) if isinstance(right_area, (int, float)) else 0.0
-                total_area = left_area_value + right_area_value
-                if total_area > 0:
-                    left_area_norm = left_area_value / total_area
-                    right_area_norm = right_area_value / total_area
+                total_left_value = float(total_left_area) if isinstance(total_left_area, (int, float)) else 0.0
+                total_right_value = float(total_right_area) if isinstance(total_right_area, (int, float)) else 0.0
+                if total_left_value <= 0:
+                    total_left_value = left_area_value
+                if total_right_value <= 0:
+                    total_right_value = right_area_value
+                if total_left_value > 0:
+                    left_area_norm = left_area_value / total_left_value
                 else:
                     left_area_norm = 0.0
+                if total_right_value > 0:
+                    right_area_norm = right_area_value / total_right_value
+                else:
                     right_area_norm = 0.0
                 lat_value = point.get("lat") if isinstance(point, dict) else None
                 lon_value = point.get("lon") if isinstance(point, dict) else None
@@ -310,10 +319,23 @@ def _split_viewshed_by_tangent(
         data = src.read(1)
         transform = src.transform
         crs = src.crs
+        valid_mask = src.read_masks(1) > 0
+
+    if data.dtype == np.uint8:
+        data = np.where(data == 255, 0, data)
 
     pixel_area = abs(transform.a * transform.e - transform.b * transform.d)
 
-    visible_mask = data > 0
+    visible_mask = (data > 0) & valid_mask
+    rows_all, cols_all = np.indices(data.shape)
+    xs_all = transform.c + transform.a * cols_all + transform.b * rows_all
+    ys_all = transform.f + transform.d * cols_all + transform.e * rows_all
+    vx_all = xs_all - observer_easting
+    vy_all = ys_all - observer_northing
+    cross_all = tx * vy_all - ty * vx_all
+    total_left_area = float(np.count_nonzero((cross_all >= 0) & valid_mask) * pixel_area)
+    total_right_area = float(np.count_nonzero((cross_all < 0) & valid_mask) * pixel_area)
+
     if not np.any(visible_mask):
         return {
             "left_viewshed": np.zeros_like(data),
@@ -323,6 +345,8 @@ def _split_viewshed_by_tangent(
             "crs": crs,
             "left_area": 0.0,
             "right_area": 0.0,
+            "total_left_area": total_left_area,
+            "total_right_area": total_right_area,
         }
 
     rows, cols = np.nonzero(visible_mask)
@@ -352,4 +376,6 @@ def _split_viewshed_by_tangent(
         "crs": crs,
         "left_area": left_area,
         "right_area": right_area,
+        "total_left_area": total_left_area,
+        "total_right_area": total_right_area,
     }
