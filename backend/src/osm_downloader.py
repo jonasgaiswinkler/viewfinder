@@ -9,7 +9,7 @@ def download_railway_lines(bounding_box: Dict[str, float]) -> List[Dict]:
     overpass_url = "http://overpass-api.de/api/interpreter"
     overpass_query = f"""
     [out:json][timeout:25];
-    way["railway"="rail"]["usage"~"^(main|branch)$"]({min_lat},{min_lon},{max_lat},{max_lon});
+    way["railway"~"^(rail|narrow_gauge)$"]["usage"~"^(main|branch)$"]({min_lat},{min_lon},{max_lat},{max_lon});
     out geom;
     """
     
