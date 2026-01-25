@@ -59,7 +59,6 @@ def sample_points_along_railway_lines(
     railway_lines: List[Dict],
     spacing_m: float = 200.0,
 ) -> List[Dict[str, float | int | str | None]]:
-    """Sample points along railway line geometries at a fixed spacing in meters."""
     if spacing_m <= 0:
         raise ValueError("spacing_m must be greater than 0")
 
@@ -69,7 +68,12 @@ def sample_points_along_railway_lines(
     min_spacing_m = spacing_m * 0.9
     connect_tolerance_m = max(1.0, spacing_m * 0.1)
 
+    print("sample_points_along_railway_lines: Sampling points with spacing (m):", spacing_m)
+
     for line in railway_lines:
+        tags = line.get("tags") or {}
+        if str(tags.get("tunnel", "")).lower() == "yes":
+            continue
         geometry = line.get("geometry")
         if not geometry or len(geometry) < 2:
             continue
@@ -170,4 +174,5 @@ def sample_points_along_railway_lines(
 
             distance_since += segment_len
 
+    print("sample_points_along_railway_lines: Total samples generated:", len(samples))
     return samples

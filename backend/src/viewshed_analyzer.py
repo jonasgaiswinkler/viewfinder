@@ -228,7 +228,7 @@ def _run_grass(grass_cmd: str, args: List[str]) -> None:
 
 
 def _run_viewshed_task(grass_cmd: str, mapset_path: str, easting: float, northing: float, view_name: str) -> None:
-    print(f"Running viewshed {view_name} in {mapset_path} at {easting},{northing}")
+    print(f"Running viewshed {view_name} at {easting},{northing}")
     _run_grass(grass_cmd, [mapset_path, "--exec", "g.region", "raster=dem@PERMANENT"])
     _run_grass(
         grass_cmd,

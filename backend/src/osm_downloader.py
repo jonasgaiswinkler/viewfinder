@@ -13,9 +13,9 @@ def download_railway_lines(bounding_box: Dict[str, float]) -> List[Dict]:
     out geom;
     """
     
-    print("Downloading railway lines with query:", overpass_query)
+    print("download_railway_lines: Downloading railway lines with query:", overpass_query)
     response = requests.get(overpass_url, params={'data': overpass_query})
-    print("Overpass API response status code:", response.status_code)
+    print("download_railway_lines: Overpass API response status code:", response.status_code)
     response.raise_for_status()  # Raise an error for bad responses
     data = response.json()
     

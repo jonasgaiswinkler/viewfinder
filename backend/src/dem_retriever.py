@@ -62,8 +62,6 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     tile_urls = [_tile_url(tile_id) for tile_id in tile_ids]
 
     print(f"retrieve_dem: tiles={len(tile_ids)}")
-    if tile_ids:
-        print(f"retrieve_dem: first_tile={tile_ids[0]}")
 
     datasets: List[rasterio.io.DatasetReader] = [] # type: ignore
     try:
