@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Tuple, cast
-import math
 import os
-import shutil
-import subprocess
 import tempfile
 
 import numpy as np
 import rasterio
-from pyproj import CRS, Transformer
+from pyproj import CRS, Transformer, Geod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from osgeo import gdal
 
 def perform_viewshed_analysis(
-    railway_lines: List[Dict],
     dem_data: Dict[str, object],
     sampled_points: Optional[Sequence[Dict[str, float | int | str | None]]] = None,
     max_workers: Optional[int] = None,
 ):
+    print("Starting viewshed analysis", flush=True)
     if not sampled_points:
         array = dem_data["array"]
         if isinstance(array, np.ndarray):
@@ -27,35 +25,26 @@ def perform_viewshed_analysis(
     dem_array = dem_data.get("array")
     dem_transform = dem_data.get("transform")
     dem_crs = dem_data.get("crs")
-    dem_path = dem_data.get("path")
+    dem_path = cast(Optional[str], dem_data.get("path"))
     cleanup_paths = dem_data.get("cleanup_paths")
 
     if dem_path is None and (not isinstance(dem_array, np.ndarray) or dem_transform is None or dem_crs is None):
         raise ValueError("DEM data must include 'array', 'transform', and 'crs', or provide a 'path'.")
 
-    grass_cmd = _resolve_grass_command()
-    utm_crs, transformer = _utm_crs_for_points(sampled_points)
-
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            grass_db = os.path.join(tmp_dir, "grassdata")
-            location_dir = os.path.join(grass_db, "viewshed")
-            os.makedirs(grass_db, exist_ok=True)
+            dem_path_to_use, dem_transform, dem_crs = _prepare_dem_data(
+                tmp_dir,
+                dem_path,
+                dem_array,
+                dem_transform,
+                dem_crs,
+            )
+            if dem_crs is None:
+                raise ValueError("DEM CRS missing or invalid.")
+            transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
 
-            _run_grass(grass_cmd, ["-c", f"epsg:{utm_crs.to_epsg()}", "-e", location_dir])
-
-            if isinstance(dem_path, str):
-                dem_path_to_use = dem_path
-            else:
-                if not isinstance(dem_array, np.ndarray):
-                    raise ValueError("DEM array missing or invalid.")
-                dem_path_to_use = os.path.join(tmp_dir, "dem.tif")
-                _write_dem_geotiff(dem_path_to_use, cast(np.ndarray, dem_array), dem_transform, dem_crs)
-
-            mapset = os.path.join(location_dir, "PERMANENT")
-            _run_grass(grass_cmd, [mapset, "--exec", "r.import", f"input={dem_path_to_use}", "output=dem", "--overwrite"])
-
-            tasks: List[Tuple[str, float, float, str, Dict[str, float | int | str | None]]] = []
+            tasks: List[Tuple[float, float, str, Dict[str, float | int | str | None]]] = []
             for idx, point in enumerate(sampled_points):
                 lat = point.get("lat") if isinstance(point, dict) else None
                 lon = point.get("lon") if isinstance(point, dict) else None
@@ -63,11 +52,8 @@ def perform_viewshed_analysis(
                     continue
 
                 easting, northing = transformer.transform(float(lon), float(lat))
-                mapset_name = f"viewshed_{idx}"
                 view_name = f"viewshed_{idx}"
-                _run_grass(grass_cmd, [mapset, "--exec", "g.mapset", "-c", f"mapset={mapset_name}"])
-                mapset_path = os.path.join(location_dir, mapset_name)
-                tasks.append((mapset_path, easting, northing, view_name, point))
+                tasks.append((easting, northing, view_name, point))
 
             if not tasks:
                 if isinstance(dem_array, np.ndarray):
@@ -75,18 +61,16 @@ def perform_viewshed_analysis(
                 raise ValueError("DEM array missing or invalid.")
 
             worker_count = max_workers or min(os.cpu_count() or 1, len(tasks))
-            print(f"Viewshed tasks: {len(tasks)}, workers: {worker_count}")
+            print(f"Viewshed tasks: {len(tasks)}, workers: {worker_count}", flush=True)
 
             def _process_task(
-                mapset_path: str,
                 easting: float,
                 northing: float,
                 view_name: str,
                 point: Dict[str, float | int | str | None],
             ) -> Dict[str, object]:
-                _run_viewshed_task(grass_cmd, mapset_path, easting, northing, view_name)
                 out_path = os.path.join(tmp_dir, f"{view_name}.tif")
-                _export_viewshed(grass_cmd, mapset_path, view_name, out_path)
+                _run_viewshed_task_gdal(dem_path_to_use, out_path, easting, northing)
 
                 tangent = _tangent_vector_for_sample(point, transformer)
                 split = _split_viewshed_by_tangent(out_path, easting, northing, tangent)
@@ -112,44 +96,43 @@ def perform_viewshed_analysis(
                     right_area_norm = 0.0
                 lat_value = point.get("lat") if isinstance(point, dict) else None
                 lon_value = point.get("lon") if isinstance(point, dict) else None
-                if tangent is None:
-                    tangent_dx = None
-                    tangent_dy = None
-                    tangent_azimuth = None
-                else:
-                    tangent_dx, tangent_dy = tangent
-                    tangent_azimuth = (math.degrees(math.atan2(tangent_dx, tangent_dy)) + 360.0) % 360.0
+                tangent_deg_4326 = point.get("tangent_deg_4326") if isinstance(point, dict) else None
+                tangent_deg_3857 = point.get("tangent_deg_3857") if isinstance(point, dict) else None
+                bridge_value = point.get("bridge") if isinstance(point, dict) else None
+                tangent_dx = point.get("tangent_dx") if isinstance(point, dict) else None
+                tangent_dy = point.get("tangent_dy") if isinstance(point, dict) else None
+                if tangent_dx is None or tangent_dy is None:
+                    if tangent is None:
+                        tangent_dx = None
+                        tangent_dy = None
+                    else:
+                        tangent_dx, tangent_dy = tangent
+                factor_total_visible_area = (left_area_norm + right_area_norm) / 2.0
+                factor_relative_visible_area = right_area_norm - left_area_norm
                 return {
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [lon_value, lat_value],
-                    },
-                    "properties": {
-                        "lat": lat_value,
-                        "lon": lon_value,
-                        "way_id": point.get("way_id") if isinstance(point, dict) else None,
-                        "left_area": left_area_norm,
-                        "right_area": right_area_norm,
-                        "tangent_dx": tangent_dx,
-                        "tangent_dy": tangent_dy,
-                        "tangent_azimuth_deg": tangent_azimuth,
-                    },
+                    "lat": lat_value,
+                    "lon": lon_value,
+                    "bridge": bridge_value,
+                    "tangent_dx": tangent_dx,
+                    "tangent_dy": tangent_dy,
+                    "tangent_deg_4326": tangent_deg_4326,
+                    "tangent_deg_3857": tangent_deg_3857,
+                    "factor_left_visible_area": left_area_norm,
+                    "factor_right_visible_area": right_area_norm,
+                    "factor_total_visible_area": factor_total_visible_area,
+                    "factor_relative_visible_area": factor_relative_visible_area,
                 }
 
             results: List[Dict[str, object]] = []
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = [
-                    executor.submit(_process_task, mapset_path, easting, northing, view_name, point)
-                    for mapset_path, easting, northing, view_name, point in tasks
+                    executor.submit(_process_task, easting, northing, view_name, point)
+                    for easting, northing, view_name, point in tasks
                 ]
                 for future in as_completed(futures):
                     results.append(future.result())
 
-            return {
-                "type": "FeatureCollection",
-                "features": results,
-            }
+            return results
     finally:
         if isinstance(cleanup_paths, list):
             for path in cleanup_paths:
@@ -160,39 +143,29 @@ def perform_viewshed_analysis(
                         pass
 
 
-def _resolve_grass_command() -> str:
-    grass_bin = os.environ.get("GRASSBIN")
-    if grass_bin:
-        return grass_bin
-    grass_cmd = shutil.which("grass") or shutil.which("grass84") or shutil.which("grass83")
-    if not grass_cmd:
-        raise RuntimeError("GRASS GIS executable not found. Set GRASSBIN or add GRASS to PATH.")
-    return grass_cmd
+def _prepare_dem_data(
+    tmp_dir: str,
+    dem_path: Optional[str],
+    dem_array: Optional[object],
+    dem_transform,
+    dem_crs,
+) -> Tuple[str, object, CRS]:
+    if isinstance(dem_path, str):
+        with rasterio.open(dem_path) as src:
+            transform = src.transform
+            crs = src.crs
+        if crs is None:
+            raise ValueError("DEM CRS missing or invalid.")
+        return dem_path, transform, CRS.from_user_input(crs)
 
+    if not isinstance(dem_array, np.ndarray):
+        raise ValueError("DEM array missing or invalid.")
+    if dem_transform is None or dem_crs is None:
+        raise ValueError("DEM transform or CRS missing or invalid.")
 
-def _utm_crs_for_points(points: Sequence[Dict[str, float | int | str | None]]) -> Tuple[CRS, Transformer]:
-    lats = []
-    lons = []
-    for point in points:
-        if not isinstance(point, dict):
-            continue
-        lat = point.get("lat")
-        lon = point.get("lon")
-        if lat is None or lon is None:
-            continue
-        lats.append(float(lat))
-        lons.append(float(lon))
-
-    if not lats or not lons:
-        raise ValueError("No valid sampled points to compute UTM zone.")
-
-    center_lat = sum(lats) / len(lats)
-    center_lon = sum(lons) / len(lons)
-    zone = int((center_lon + 180) / 6) + 1
-    epsg = 32600 + zone if center_lat >= 0 else 32700 + zone
-    utm_crs = CRS.from_epsg(epsg)
-    transformer = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-    return utm_crs, transformer
+    dem_path_to_use = os.path.join(tmp_dir, "dem.tif")
+    _write_dem_geotiff(dem_path_to_use, cast(np.ndarray, dem_array), dem_transform, dem_crs)
+    return dem_path_to_use, dem_transform, CRS.from_user_input(dem_crs)
 
 
 def _write_dem_geotiff(path: str, array: np.ndarray, transform, crs) -> None:
@@ -214,57 +187,34 @@ def _write_dem_geotiff(path: str, array: np.ndarray, transform, crs) -> None:
         dst.write(array, 1)
 
 
-def _run_grass(grass_cmd: str, args: List[str]) -> None:
-    completed = subprocess.run(
-        [grass_cmd, *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
+def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northing: float) -> None:
+    #print(f"Running viewshed at {easting},{northing}", flush=True)
+    src_ds = gdal.Open(dem_path, gdal.GA_ReadOnly)
+    if src_ds is None:
+        raise RuntimeError(f"Failed to open DEM for viewshed: {dem_path}")
+    band = src_ds.GetRasterBand(1)
+    if band is None:
+        raise RuntimeError("DEM raster band missing.")
+
+    gdal.ViewshedGenerate(
+        band,
+        "GTiff",
+        out_path,
+        ["COMPRESS=DEFLATE"],
+        float(easting),
+        float(northing),
+        2.5,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.85714,
+        gdal.GVM_Edge,
+        25000.0,
     )
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"GRASS command failed: {' '.join(args)}\n{message}")
-
-
-def _run_viewshed_task(grass_cmd: str, mapset_path: str, easting: float, northing: float, view_name: str) -> None:
-    print(f"Running viewshed {view_name} at {easting},{northing}")
-    _run_grass(grass_cmd, [mapset_path, "--exec", "g.region", "raster=dem@PERMANENT"])
-    _run_grass(
-        grass_cmd,
-        [
-            mapset_path,
-            "--exec",
-            "r.viewshed",
-            "input=dem@PERMANENT",
-            f"output={view_name}",
-            f"coordinates={easting},{northing}",
-            "observer_elevation=2.5",
-            "target_elevation=0.0",
-            "max_distance=25000",
-            "--overwrite",
-            "-b",
-            "-c",
-            "-r"
-        ],
-    )
-    print(f"Finished viewshed {view_name}")
-
-
-def _export_viewshed(grass_cmd: str, mapset_path: str, view_name: str, out_path: str) -> None:
-    _run_grass(
-        grass_cmd,
-        [
-            mapset_path,
-            "--exec",
-            "r.out.gdal",
-            f"input={view_name}",
-            f"output={out_path}",
-            "format=GTiff",
-            "createopt=COMPRESS=DEFLATE",
-            "--overwrite",
-        ],
-    )
+    src_ds = None
+    #print("Finished viewshed", flush=True)
 
 
 def _tangent_vector_for_sample(
@@ -276,9 +226,36 @@ def _tangent_vector_for_sample(
 
     lat = sample.get("lat")
     lon = sample.get("lon")
+    tangent_dx = sample.get("tangent_dx")
+    tangent_dy = sample.get("tangent_dy")
+    tangent_deg_4326 = sample.get("tangent_deg_4326")
     tangent_lat = sample.get("tangent_lat")
     tangent_lon = sample.get("tangent_lon")
-    if lat is None or lon is None or tangent_lat is None or tangent_lon is None:
+    if lat is None or lon is None:
+        return None
+
+    base_x, base_y = transformer.transform(float(lon), float(lat))
+
+    if tangent_dx is not None and tangent_dy is not None:
+        dx = float(tangent_dx)
+        dy = float(tangent_dy)
+        if dx == 0 and dy == 0:
+            return None
+        return (dx, dy)
+
+    if tangent_deg_4326 is not None:
+        azimuth = float(tangent_deg_4326)
+        geod = Geod(ellps="WGS84")
+        step_distance_m = 10.0
+        step_lon, step_lat, _ = geod.fwd(float(lon), float(lat), azimuth, step_distance_m)
+        step_x, step_y = transformer.transform(step_lon, step_lat)
+        dx = step_x - base_x
+        dy = step_y - base_y
+        if dx == 0 and dy == 0:
+            return None
+        return (dx, dy)
+
+    if tangent_lat is None or tangent_lon is None:
         return None
 
     tlat = float(tangent_lat)
@@ -286,7 +263,6 @@ def _tangent_vector_for_sample(
     if tlat == 0 and tlon == 0:
         return None
 
-    base_x, base_y = transformer.transform(float(lon), float(lat))
     epsilon = 1.0e-5
     norm = (tlat * tlat + tlon * tlon) ** 0.5
     step_lat = float(lat) + (tlat / norm) * epsilon
@@ -319,22 +295,24 @@ def _split_viewshed_by_tangent(
         data = src.read(1)
         transform = src.transform
         crs = src.crs
-        valid_mask = src.read_masks(1) > 0
+        nodata = src.nodata
 
-    if data.dtype == np.uint8:
-        data = np.where(data == 255, 0, data)
+    if nodata is None or (isinstance(nodata, (int, float)) and nodata == 0):
+        total_mask = np.ones_like(data, dtype=bool)
+    else:
+        total_mask = data != nodata
 
     pixel_area = abs(transform.a * transform.e - transform.b * transform.d)
 
-    visible_mask = (data > 0) & valid_mask
+    visible_mask = (data > 0) & total_mask
     rows_all, cols_all = np.indices(data.shape)
     xs_all = transform.c + transform.a * cols_all + transform.b * rows_all
     ys_all = transform.f + transform.d * cols_all + transform.e * rows_all
     vx_all = xs_all - observer_easting
     vy_all = ys_all - observer_northing
     cross_all = tx * vy_all - ty * vx_all
-    total_left_area = float(np.count_nonzero((cross_all >= 0) & valid_mask) * pixel_area)
-    total_right_area = float(np.count_nonzero((cross_all < 0) & valid_mask) * pixel_area)
+    total_left_area = float(np.count_nonzero((cross_all >= 0) & total_mask) * pixel_area)
+    total_right_area = float(np.count_nonzero((cross_all < 0) & total_mask) * pixel_area)
 
     if not np.any(visible_mask):
         return {
