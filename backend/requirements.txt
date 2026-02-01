@@ -1,0 +1,15 @@
+FastAPI
+requests
+geopandas
+rasterio
+gdal
+numpy
+scipy
+shapely
+osmnx
+pyproj
+matplotlib
+pystac-client
+python-dotenv
+sqlalchemy[asyncio]
+asyncpg
