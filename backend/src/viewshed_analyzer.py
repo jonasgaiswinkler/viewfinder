@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from osgeo import gdal
 
 from factor_calculators.visible_area import visible_area_factors_from_split
+from factor_calculators.elevation_difference import elevation_difference_factors_from_split
 
 def perform_viewshed_analysis(
     dem_data: Dict[str, object],
@@ -45,6 +46,18 @@ def perform_viewshed_analysis(
             if dem_crs is None:
                 raise ValueError("DEM CRS missing or invalid.")
             transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
+
+            dem_array_for_factors: Optional[np.ndarray] = None
+            dem_nodata: Optional[float] = None
+            if isinstance(dem_array, np.ndarray):
+                dem_array_for_factors = dem_array
+            else:
+                try:
+                    with rasterio.open(dem_path_to_use) as src:
+                        dem_array_for_factors = src.read(1)
+                        dem_nodata = src.nodata
+                except Exception:
+                    dem_array_for_factors = None
 
             tasks: List[Tuple[float, float, str, Dict[str, float | int | str | None]]] = []
             for idx, point in enumerate(sampled_points):
@@ -91,6 +104,13 @@ def perform_viewshed_analysis(
                         tangent_dx, tangent_dy = tangent
 
                 visible_area_factors = visible_area_factors_from_split(split)
+                elevation_difference_factors = elevation_difference_factors_from_split(
+                    {
+                        **split,
+                        "dem_array": dem_array_for_factors,
+                        "dem_nodata": dem_nodata,
+                    }
+                )
 
                 return {
                     "lat": lat_value,
@@ -102,6 +122,7 @@ def perform_viewshed_analysis(
                     "tangent_deg_3857": tangent_deg_3857,
                     "factors": {
                         "visible_area": visible_area_factors,
+                        "elevation_difference": elevation_difference_factors,
                     },
                 }
 
@@ -193,7 +214,7 @@ def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northi
         0.0,
         0.85714,
         gdal.GVM_Edge,
-        25000.0,
+        10000.0,
     )
     src_ds = None
     #print("Finished viewshed", flush=True)
