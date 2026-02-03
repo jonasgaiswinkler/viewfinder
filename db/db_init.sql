@@ -1,3 +1,5 @@
+-- OSM Ways and Way Nodes Tables
+
 CREATE TYPE osm_way_type AS ENUM ('railway', 'road', 'path');
 
 CREATE TABLE osm_ways (
@@ -10,7 +12,7 @@ CREATE TABLE osm_ways (
 );
 
 CREATE TABLE osm_way_nodes (
-  way_id BIGINT NOT NULL REFERENCES osm_ways(way_id),
+  way_id BIGINT NOT NULL REFERENCES osm_ways(way_id) ON DELETE CASCADE,
   node_id BIGINT NOT NULL,
   seq INTEGER NOT NULL,
   PRIMARY KEY (way_id, seq)
@@ -19,6 +21,8 @@ CREATE TABLE osm_way_nodes (
 CREATE INDEX osm_ways_geom_gix ON osm_ways USING gist (geom);
 CREATE INDEX osm_way_nodes_node_id_idx ON osm_way_nodes (node_id);
 CREATE INDEX osm_way_nodes_way_id ON osm_way_nodes(way_id);
+
+-- Views for Topological Segmentation
 
 CREATE OR REPLACE VIEW osm_ways_topo AS
 WITH RECURSIVE
@@ -120,6 +124,8 @@ SELECT
   geom
 FROM merged;
 
+--  View for Topological Segmentation without Bridges
+
 CREATE OR REPLACE VIEW osm_ways_topo_without_bridges AS
 WITH RECURSIVE
 node_degree AS (
@@ -216,22 +222,57 @@ SELECT
   geom
 FROM merged;
 
+-- Scenicness Points
+
 CREATE TABLE scenicness_points (
     id bigserial PRIMARY KEY,
     geom geometry(Point, 4326) NOT NULL,
     bridge boolean NOT NULL,
-    way_id bigint REFERENCES osm_ways(way_id),
+    way_id bigint REFERENCES osm_ways(way_id) ON DELETE CASCADE,
     tangent_dx double precision,
     tangent_dy double precision,
     tangent_deg_4326 double precision,
-    tangent_deg_3857 double precision,
-    factor_left_visible_area double precision,
-    factor_right_visible_area double precision,
-    factor_total_visible_area double precision,
-    factor_relative_visible_area double precision
+    tangent_deg_3857 double precision
 );
 
 CREATE INDEX scenicness_points_geom_gix ON scenicness_points USING gist (geom);
+
+-- Scenicness Factors
+
+CREATE TABLE scenicness_factors (
+  id SMALLSERIAL PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  weight DOUBLE PRECISION NOT NULL
+);
+
+-- Create default factors
+
+INSERT INTO scenicness_factors (name, weight) VALUES
+  ('visible_area', 1),
+  ('average_visibility', 0),
+  ('elevation_difference', 0)
+ON CONFLICT (name)
+DO UPDATE SET weight = EXCLUDED.weight;
+
+-- Scenicness Factor Values
+
+CREATE TABLE scenicness_point_factor_values (
+  point_id BIGINT NOT NULL REFERENCES scenicness_points(id) ON DELETE CASCADE,
+  factor_id SMALLINT NOT NULL REFERENCES scenicness_factors(id) ON DELETE CASCADE,
+  total_value double precision,
+  left_value double precision,
+  right_value double precision,
+  relative_value double precision,
+  PRIMARY KEY (point_id, factor_id)
+);
+
+CREATE INDEX scenicness_point_factor_values_point_id_idx
+  ON scenicness_point_factor_values (point_id);
+
+CREATE INDEX scenicness_point_factor_values_factor_id_idx
+  ON scenicness_point_factor_values (factor_id);
+
+-- Scenicness Segments Materialized View
 
 CREATE MATERIALIZED VIEW scenicness_segments AS
 WITH points AS (
@@ -243,12 +284,15 @@ WITH points AS (
     sp.geom,
     sp.tangent_deg_4326,
     sp.tangent_deg_3857,
-    sp.factor_left_visible_area,
-    sp.factor_right_visible_area,
-    sp.factor_total_visible_area,
-    sp.factor_relative_visible_area,
+    COALESCE(SUM(f.weight * pfv.left_value), 0) AS left_value,
+    COALESCE(SUM(f.weight * pfv.right_value), 0) AS right_value,
+    COALESCE(SUM(f.weight * pfv.total_value), 0) AS total_value,
     ST_LineLocatePoint(topo.geom, sp.geom) AS frac
   FROM scenicness_points sp
+  LEFT JOIN scenicness_point_factor_values pfv
+    ON pfv.point_id = sp.id
+  LEFT JOIN scenicness_factors f
+    ON f.id = pfv.factor_id
   JOIN LATERAL (
     SELECT segment_id, geom
     FROM osm_ways_topo_without_bridges
@@ -257,6 +301,14 @@ WITH points AS (
     ORDER BY geom <-> sp.geom
     LIMIT 1
   ) AS topo ON true
+  GROUP BY
+    sp.id,
+    sp.way_id,
+    topo.segment_id,
+    topo.geom,
+    sp.geom,
+    sp.tangent_deg_4326,
+    sp.tangent_deg_3857
 ),
 ordered AS (
   SELECT
@@ -266,10 +318,9 @@ ordered AS (
     LEAD(p.frac) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_frac,
     LEAD(p.tangent_deg_4326) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_tangent_deg_4326,
     LEAD(p.tangent_deg_3857) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_tangent_deg_3857,
-    LEAD(p.factor_left_visible_area) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_factor_left_visible_area,
-    LEAD(p.factor_right_visible_area) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_factor_right_visible_area,
-    LEAD(p.factor_total_visible_area) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_factor_total_visible_area,
-    LEAD(p.factor_relative_visible_area) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_factor_relative_visible_area
+    LEAD(p.left_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_left_value,
+    LEAD(p.right_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_right_value,
+    LEAD(p.total_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_total_value
   FROM points p
 ),
 pairs AS (
@@ -282,14 +333,12 @@ pairs AS (
     next_geom AS end_geom,
     frac AS start_frac,
     next_frac AS end_frac,
-    factor_left_visible_area AS start_left,
-    factor_right_visible_area AS start_right,
-    factor_total_visible_area AS start_total,
-    factor_relative_visible_area AS start_relative,
-    next_factor_left_visible_area AS end_left,
-    next_factor_right_visible_area AS end_right,
-    next_factor_total_visible_area AS end_total,
-    next_factor_relative_visible_area AS end_relative,
+    left_value AS start_left,
+    right_value AS start_right,
+    total_value AS start_total,
+    next_left_value AS end_left,
+    next_right_value AS end_right,
+    next_total_value AS end_total,
     COALESCE(tangent_deg_3857, tangent_deg_4326) AS start_tangent_deg,
     COALESCE(next_tangent_deg_3857, next_tangent_deg_4326) AS end_tangent_deg
   FROM ordered
@@ -317,48 +366,48 @@ SELECT
     WHEN start_tangent_deg IS NULL THEN start_left
     WHEN COS(RADIANS(start_tangent_deg) - azimuth_rad) >= 0 THEN start_left
     ELSE start_right
-  END AS start_factor_left_visible_area,
+  END AS start_left_value,
   CASE
     WHEN start_tangent_deg IS NULL THEN start_right
     WHEN COS(RADIANS(start_tangent_deg) - azimuth_rad) >= 0 THEN start_right
     ELSE start_left
-  END AS start_factor_right_visible_area,
+  END AS start_right_value,
   CASE
     WHEN start_tangent_deg IS NULL THEN start_total
     ELSE start_total
-  END AS start_factor_total_visible_area,
+  END AS start_total_value,
   CASE
-    WHEN start_tangent_deg IS NULL THEN start_relative
+    WHEN start_tangent_deg IS NULL THEN start_right - start_left
     ELSE (
       CASE
         WHEN COS(RADIANS(start_tangent_deg) - azimuth_rad) >= 0 THEN start_right - start_left
         ELSE start_left - start_right
       END
     )
-  END AS start_factor_relative_visible_area,
+  END AS start_relative_value,
   CASE
     WHEN end_tangent_deg IS NULL THEN end_left
     WHEN COS(RADIANS(end_tangent_deg) - azimuth_rad) >= 0 THEN end_left
     ELSE end_right
-  END AS end_factor_left_visible_area,
+  END AS end_left_value,
   CASE
     WHEN end_tangent_deg IS NULL THEN end_right
     WHEN COS(RADIANS(end_tangent_deg) - azimuth_rad) >= 0 THEN end_right
     ELSE end_left
-  END AS end_factor_right_visible_area,
+  END AS end_right_value,
   CASE
     WHEN end_tangent_deg IS NULL THEN end_total
     ELSE end_total
-  END AS end_factor_total_visible_area,
+  END AS end_total_value,
   CASE
-    WHEN end_tangent_deg IS NULL THEN end_relative
+    WHEN end_tangent_deg IS NULL THEN end_right - end_left
     ELSE (
       CASE
         WHEN COS(RADIANS(end_tangent_deg) - azimuth_rad) >= 0 THEN end_right - end_left
         ELSE end_left - end_right
       END
     )
-  END AS end_factor_relative_visible_area
+  END AS end_relative_value
 FROM azimuths;
 
 CREATE INDEX scenicness_segments_geom_gix ON scenicness_segments USING gist (geom);

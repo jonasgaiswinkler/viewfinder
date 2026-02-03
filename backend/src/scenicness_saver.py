@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,7 @@ async def save_viewshed_results_to_db(
     session: AsyncSession,
     bounding_box: Optional[Dict[str, float]] = None,
 ) -> int:
-    rows: List[Dict[str, Any]] = []
+    rows: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for result in viewshed_results:
         if not isinstance(result, dict):
             continue
@@ -32,21 +32,17 @@ async def save_viewshed_results_to_db(
         lon = result.get("lon")
         if lat is None or lon is None:
             continue
-        rows.append(
-            {
-                "lat": float(lat),
-                "lon": float(lon),
-                "bridge": result.get("bridge"),
-                "tangent_dx": _to_float(result.get("tangent_dx")),
-                "tangent_dy": _to_float(result.get("tangent_dy")),
-                "tangent_deg_4326": _to_float(result.get("tangent_deg_4326")),
-                "tangent_deg_3857": _to_float(result.get("tangent_deg_3857")),
-                "factor_left_visible_area": _to_float(result.get("factor_left_visible_area")),
-                "factor_right_visible_area": _to_float(result.get("factor_right_visible_area")),
-                "factor_total_visible_area": _to_float(result.get("factor_total_visible_area")),
-                "factor_relative_visible_area": _to_float(result.get("factor_relative_visible_area")),
-            }
-        )
+        row = {
+            "lat": float(lat),
+            "lon": float(lon),
+            "bridge": result.get("bridge"),
+            "tangent_dx": _to_float(result.get("tangent_dx")),
+            "tangent_dy": _to_float(result.get("tangent_dy")),
+            "tangent_deg_4326": _to_float(result.get("tangent_deg_4326")),
+            "tangent_deg_3857": _to_float(result.get("tangent_deg_3857")),
+        }
+        factors = result.get("factors")
+        rows.append((row, factors if isinstance(factors, dict) else {}))
 
     if bounding_box:
         delete_sql = text(
@@ -72,8 +68,13 @@ async def save_viewshed_results_to_db(
 
     print(f"Inserting {len(rows)} scenicness points")
 
+    factor_map: Dict[str, int] = {}
+    factor_result = await session.execute(text("SELECT id, name FROM scenicness_factors"))
+    for factor_id, name in factor_result.fetchall():
+        if isinstance(name, str) and isinstance(factor_id, int):
+            factor_map[name] = factor_id
 
-    insert_sql = text(
+    insert_point_sql = text(
         """
         INSERT INTO scenicness_points (
             geom,
@@ -82,11 +83,7 @@ async def save_viewshed_results_to_db(
             tangent_dx,
             tangent_dy,
             tangent_deg_4326,
-            tangent_deg_3857,
-            factor_left_visible_area,
-            factor_right_visible_area,
-            factor_total_visible_area,
-            factor_relative_visible_area
+            tangent_deg_3857
         )
         VALUES (
             ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
@@ -100,17 +97,59 @@ async def save_viewshed_results_to_db(
             CAST(:tangent_dx AS double precision),
             CAST(:tangent_dy AS double precision),
             CAST(:tangent_deg_4326 AS double precision),
-            CAST(:tangent_deg_3857 AS double precision),
-            CAST(:factor_left_visible_area AS double precision),
-            CAST(:factor_right_visible_area AS double precision),
-            CAST(:factor_total_visible_area AS double precision),
-            CAST(:factor_relative_visible_area AS double precision)
+            CAST(:tangent_deg_3857 AS double precision)
+        )
+        RETURNING id
+        """
+    )
+
+    insert_factor_sql = text(
+        """
+        INSERT INTO scenicness_point_factor_values (
+            point_id,
+            factor_id,
+            total_value,
+            left_value,
+            right_value,
+            relative_value
+        )
+        VALUES (
+            :point_id,
+            :factor_id,
+            CAST(:total_value AS double precision),
+            CAST(:left_value AS double precision),
+            CAST(:right_value AS double precision),
+            CAST(:relative_value AS double precision)
         )
         """
     )
 
-    for row in rows:
-        await session.execute(insert_sql, row)
+    for row, factors in rows:
+        result = await session.execute(insert_point_sql, row)
+        point_id = result.scalar_one()
+
+        if not isinstance(factors, dict):
+            continue
+        for factor_name, values in factors.items():
+            if not isinstance(factor_name, str):
+                continue
+            factor_id = factor_map.get(factor_name)
+            if factor_id is None:
+                continue
+            if not isinstance(values, dict):
+                continue
+            await session.execute(
+                insert_factor_sql,
+                {
+                    "point_id": point_id,
+                    "factor_id": factor_id,
+                    "total_value": _to_float(values.get("total_value")),
+                    "left_value": _to_float(values.get("left_value")),
+                    "right_value": _to_float(values.get("right_value")),
+                    "relative_value": _to_float(values.get("relative_value")),
+                },
+            )
+
     await session.commit()
     print("Refreshing scenicness_segments materialized view")
     await session.execute(text("REFRESH MATERIALIZED VIEW scenicness_segments"))

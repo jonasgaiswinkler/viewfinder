@@ -10,6 +10,8 @@ from pyproj import CRS, Transformer, Geod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from osgeo import gdal
 
+from factor_calculators.visible_area import visible_area_factors_from_split
+
 def perform_viewshed_analysis(
     dem_data: Dict[str, object],
     sampled_points: Optional[Sequence[Dict[str, float | int | str | None]]] = None,
@@ -74,26 +76,6 @@ def perform_viewshed_analysis(
 
                 tangent = _tangent_vector_for_sample(point, transformer)
                 split = _split_viewshed_by_tangent(out_path, easting, northing, tangent)
-                left_area = split.get("left_area")
-                right_area = split.get("right_area")
-                total_left_area = split.get("total_left_area")
-                total_right_area = split.get("total_right_area")
-                left_area_value = float(left_area) if isinstance(left_area, (int, float)) else 0.0
-                right_area_value = float(right_area) if isinstance(right_area, (int, float)) else 0.0
-                total_left_value = float(total_left_area) if isinstance(total_left_area, (int, float)) else 0.0
-                total_right_value = float(total_right_area) if isinstance(total_right_area, (int, float)) else 0.0
-                if total_left_value <= 0:
-                    total_left_value = left_area_value
-                if total_right_value <= 0:
-                    total_right_value = right_area_value
-                if total_left_value > 0:
-                    left_area_norm = left_area_value / total_left_value
-                else:
-                    left_area_norm = 0.0
-                if total_right_value > 0:
-                    right_area_norm = right_area_value / total_right_value
-                else:
-                    right_area_norm = 0.0
                 lat_value = point.get("lat") if isinstance(point, dict) else None
                 lon_value = point.get("lon") if isinstance(point, dict) else None
                 tangent_deg_4326 = point.get("tangent_deg_4326") if isinstance(point, dict) else None
@@ -107,8 +89,9 @@ def perform_viewshed_analysis(
                         tangent_dy = None
                     else:
                         tangent_dx, tangent_dy = tangent
-                factor_total_visible_area = (left_area_norm + right_area_norm) / 2.0
-                factor_relative_visible_area = right_area_norm - left_area_norm
+
+                visible_area_factors = visible_area_factors_from_split(split)
+
                 return {
                     "lat": lat_value,
                     "lon": lon_value,
@@ -117,10 +100,9 @@ def perform_viewshed_analysis(
                     "tangent_dy": tangent_dy,
                     "tangent_deg_4326": tangent_deg_4326,
                     "tangent_deg_3857": tangent_deg_3857,
-                    "factor_left_visible_area": left_area_norm,
-                    "factor_right_visible_area": right_area_norm,
-                    "factor_total_visible_area": factor_total_visible_area,
-                    "factor_relative_visible_area": factor_relative_visible_area,
+                    "factors": {
+                        "visible_area": visible_area_factors,
+                    },
                 }
 
             results: List[Dict[str, object]] = []
@@ -302,29 +284,22 @@ def _split_viewshed_by_tangent(
     else:
         total_mask = data != nodata
 
-    pixel_area = abs(transform.a * transform.e - transform.b * transform.d)
-
     visible_mask = (data > 0) & total_mask
-    rows_all, cols_all = np.indices(data.shape)
-    xs_all = transform.c + transform.a * cols_all + transform.b * rows_all
-    ys_all = transform.f + transform.d * cols_all + transform.e * rows_all
-    vx_all = xs_all - observer_easting
-    vy_all = ys_all - observer_northing
-    cross_all = tx * vy_all - ty * vx_all
-    total_left_area = float(np.count_nonzero((cross_all >= 0) & total_mask) * pixel_area)
-    total_right_area = float(np.count_nonzero((cross_all < 0) & total_mask) * pixel_area)
-
     if not np.any(visible_mask):
+        left_mask = np.zeros_like(visible_mask, dtype=bool)
+        right_mask = np.zeros_like(visible_mask, dtype=bool)
         return {
             "left_viewshed": np.zeros_like(data),
             "right_viewshed": np.zeros_like(data),
             "viewshed": data,
             "transform": transform,
             "crs": crs,
-            "left_area": 0.0,
-            "right_area": 0.0,
-            "total_left_area": total_left_area,
-            "total_right_area": total_right_area,
+            "nodata": nodata,
+            "observer_easting": observer_easting,
+            "observer_northing": observer_northing,
+            "tangent": tangent,
+            "left_mask": left_mask,
+            "right_mask": right_mask,
         }
 
     rows, cols = np.nonzero(visible_mask)
@@ -343,17 +318,18 @@ def _split_viewshed_by_tangent(
     left_viewshed = np.where(left_mask, data, 0)
     right_viewshed = np.where(right_mask, data, 0)
 
-    left_area = float(np.count_nonzero(left_mask) * pixel_area)
-    right_area = float(np.count_nonzero(right_mask) * pixel_area)
-
     return {
         "left_viewshed": left_viewshed,
         "right_viewshed": right_viewshed,
         "viewshed": data,
         "transform": transform,
         "crs": crs,
-        "left_area": left_area,
-        "right_area": right_area,
-        "total_left_area": total_left_area,
-        "total_right_area": total_right_area,
+        "nodata": nodata,
+        "observer_easting": observer_easting,
+        "observer_northing": observer_northing,
+        "tangent": tangent,
+        "left_mask": left_mask,
+        "right_mask": right_mask,
     }
+
+

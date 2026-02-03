@@ -42,7 +42,7 @@
 					'line-opacity': [
 						'interpolate',
 						['linear'],
-						['get', 'start_factor_total_visible_area'],
+						['get', 'start_total_value'],
 						0.005,
 						0,
 						0.015,
@@ -51,7 +51,7 @@
 					'line-color': [
 						'interpolate',
 						['linear'],
-						['get', 'start_factor_total_visible_area'],
+						['get', 'start_total_value'],
 						0.005,
 						'white',
 						0.015,
@@ -60,7 +60,7 @@
 					'line-width': [
 						'interpolate',
 						['linear'],
-						['get', 'start_factor_total_visible_area'],
+						['get', 'start_total_value'],
 						0.005,
 						2,
 						0.015,
@@ -78,7 +78,7 @@
 						'icon-rotation-alignment': 'map',
 						'icon-rotate': [
 							'case',
-							['>', ['get', 'start_factor_relative_visible_area'], 0],
+							['>', ['get', 'start_relative_value'], 0],
 							90,
 							-90
 						],
@@ -93,7 +93,7 @@
 						'icon-rotation-alignment': 'map',
 						'icon-rotate': [
 							'case',
-							['>', ['get', 'start_factor_relative_visible_area'], 0],
+							['>', ['get', 'start_relative_value'], 0],
 							90,
 							-90
 						],
