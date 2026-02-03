@@ -248,9 +248,9 @@ CREATE TABLE scenicness_factors (
 -- Create default factors
 
 INSERT INTO scenicness_factors (name, weight) VALUES
-  ('visible_area', 1),
+  ('visible_area', 0.33),
   ('average_visibility', 0),
-  ('elevation_difference', 0)
+  ('elevation_difference', 0.67)
 ON CONFLICT (name)
 DO UPDATE SET weight = EXCLUDED.weight;
 

@@ -43,27 +43,27 @@
 						'interpolate',
 						['linear'],
 						['get', 'start_total_value'],
-						0.005,
 						0,
-						0.015,
+						0,
+						0.25,
 						1
 					],
 					'line-color': [
 						'interpolate',
 						['linear'],
 						['get', 'start_total_value'],
-						0.005,
+						0,
 						'white',
-						0.015,
+						0.25,
 						'red'
 					],
 					'line-width': [
 						'interpolate',
 						['linear'],
 						['get', 'start_total_value'],
-						0.005,
+						0,
 						2,
-						0.015,
+						0.25,
 						5
 					]
 				}}
