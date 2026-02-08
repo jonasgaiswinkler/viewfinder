@@ -70,7 +70,7 @@ class WayType(str, Enum):
 
 
 class ComputeScenicnessRequest(BaseModel):
-    bounding_box: BoundingBox
+    bounding_box: BoundingBox = BoundingBox(min_lat=46.215, min_lon=9.368, max_lat=46.888, max_lon=10.335)
     way_type: WayType = WayType.railway
 
 @router.post("/compute-scenicness/")

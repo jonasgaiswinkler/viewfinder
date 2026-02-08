@@ -230,6 +230,7 @@ async def save_ways_to_db(
                 ON CONFLICT DO NOTHING
                 """
             )
-            await session.execute(insert_nodes_sql, filtered_node_rows)
+            for node_row in filtered_node_rows:
+                await session.execute(insert_nodes_sql, node_row)
     await session.commit()
     return len(rows)

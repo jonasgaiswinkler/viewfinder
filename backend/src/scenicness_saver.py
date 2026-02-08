@@ -108,7 +108,6 @@ async def save_viewshed_results_to_db(
         INSERT INTO scenicness_point_factor_values (
             point_id,
             factor_id,
-            total_value,
             left_value,
             right_value,
             relative_value
@@ -116,7 +115,6 @@ async def save_viewshed_results_to_db(
         VALUES (
             :point_id,
             :factor_id,
-            CAST(:total_value AS double precision),
             CAST(:left_value AS double precision),
             CAST(:right_value AS double precision),
             CAST(:relative_value AS double precision)
@@ -143,7 +141,6 @@ async def save_viewshed_results_to_db(
                 {
                     "point_id": point_id,
                     "factor_id": factor_id,
-                    "total_value": _to_float(values.get("total_value")),
                     "left_value": _to_float(values.get("left_value")),
                     "right_value": _to_float(values.get("right_value")),
                     "relative_value": _to_float(values.get("relative_value")),

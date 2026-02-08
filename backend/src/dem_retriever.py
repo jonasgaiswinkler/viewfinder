@@ -1,8 +1,11 @@
 from typing import Dict, Iterable, List
 import math
 import rasterio
+import rasterio.warp
 from rasterio.errors import RasterioIOError
 from rasterio.merge import merge
+from rasterio.enums import Resampling
+from pyproj import CRS
 import tempfile
 
 
@@ -80,10 +83,48 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
             mosaic, out_trans = merge(datasets, bounds=(min_lon, min_lat, max_lon, max_lat))
             print(f"retrieve_dem: mosaic shape={mosaic.shape}")
 
+            source_crs = datasets[0].crs
+            
+            # Reproject to EPSG:3857 (Web Mercator in meters) for viewshed analysis
+            source_crs_obj = CRS.from_user_input(source_crs)
+            if source_crs_obj.is_geographic:
+                print(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
+                target_crs = CRS.from_epsg(3857)
+                
+                # Calculate transform for reprojection
+                transform, width, height = rasterio.warp.calculate_default_transform(
+                    source_crs, target_crs, mosaic.shape[2], mosaic.shape[1],
+                    left=min_lon, bottom=min_lat, right=max_lon, top=max_lat
+                )
+                
+                # Create output array
+                reprojected = mosaic.copy()
+                reprojected.fill(0)
+                reprojected = reprojected[:, :height, :width]
+                
+                # Reproject
+                rasterio.warp.reproject(
+                    source=mosaic[0],
+                    destination=reprojected[0],
+                    src_transform=out_trans,
+                    src_crs=source_crs,
+                    dst_transform=transform,
+                    dst_crs=target_crs,
+                    resampling=Resampling.bilinear
+                )
+                
+                final_array = reprojected[0]
+                final_transform = transform
+                final_crs = target_crs
+            else:
+                final_array = mosaic[0]
+                final_transform = out_trans
+                final_crs = source_crs
+
             result: Dict[str, object] = {
-                "array": mosaic[0],
-                "transform": out_trans,
-                "crs": datasets[0].crs,
+                "array": final_array,
+                "transform": final_transform,
+                "crs": final_crs,
             }
 
             if write_geotiff:
@@ -95,15 +136,15 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
                     tmp_path,
                     "w",
                     driver="GTiff",
-                    height=mosaic.shape[1],
-                    width=mosaic.shape[2],
+                    height=final_array.shape[0],
+                    width=final_array.shape[1],
                     count=1,
-                    dtype=mosaic.dtype,
-                    crs=datasets[0].crs,
-                    transform=out_trans,
+                    dtype=final_array.dtype,
+                    crs=final_crs,
+                    transform=final_transform,
                     nodata=None,
                 ) as dst:
-                    dst.write(mosaic[0], 1)
+                    dst.write(final_array, 1)
 
                 result["path"] = tmp_path
                 result["cleanup_paths"] = [tmp_path]

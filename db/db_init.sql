@@ -248,9 +248,10 @@ CREATE TABLE scenicness_factors (
 -- Create default factors
 
 INSERT INTO scenicness_factors (name, weight) VALUES
-  ('visible_area', 0.33),
+  ('visible_area', 0.1),
   ('average_visibility', 0),
-  ('elevation_difference', 0.67)
+  ('elevation_difference', 0.35),
+  ('max_elevation', 0.55)
 ON CONFLICT (name)
 DO UPDATE SET weight = EXCLUDED.weight;
 
@@ -259,7 +260,6 @@ DO UPDATE SET weight = EXCLUDED.weight;
 CREATE TABLE scenicness_point_factor_values (
   point_id BIGINT NOT NULL REFERENCES scenicness_points(id) ON DELETE CASCADE,
   factor_id SMALLINT NOT NULL REFERENCES scenicness_factors(id) ON DELETE CASCADE,
-  total_value double precision,
   left_value double precision,
   right_value double precision,
   relative_value double precision,
@@ -286,7 +286,6 @@ WITH points AS (
     sp.tangent_deg_3857,
     COALESCE(SUM(f.weight * pfv.left_value), 0) AS left_value,
     COALESCE(SUM(f.weight * pfv.right_value), 0) AS right_value,
-    COALESCE(SUM(f.weight * pfv.total_value), 0) AS total_value,
     ST_LineLocatePoint(topo.geom, sp.geom) AS frac
   FROM scenicness_points sp
   LEFT JOIN scenicness_point_factor_values pfv
@@ -319,8 +318,7 @@ ordered AS (
     LEAD(p.tangent_deg_4326) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_tangent_deg_4326,
     LEAD(p.tangent_deg_3857) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_tangent_deg_3857,
     LEAD(p.left_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_left_value,
-    LEAD(p.right_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_right_value,
-    LEAD(p.total_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_total_value
+    LEAD(p.right_value) OVER (PARTITION BY p.segment_id ORDER BY p.frac) AS next_right_value
   FROM points p
 ),
 pairs AS (
@@ -335,10 +333,8 @@ pairs AS (
     next_frac AS end_frac,
     left_value AS start_left,
     right_value AS start_right,
-    total_value AS start_total,
     next_left_value AS end_left,
     next_right_value AS end_right,
-    next_total_value AS end_total,
     COALESCE(tangent_deg_3857, tangent_deg_4326) AS start_tangent_deg,
     COALESCE(next_tangent_deg_3857, next_tangent_deg_4326) AS end_tangent_deg
   FROM ordered
@@ -372,10 +368,10 @@ SELECT
     WHEN COS(RADIANS(start_tangent_deg) - azimuth_rad) >= 0 THEN start_right
     ELSE start_left
   END AS start_right_value,
-  CASE
-    WHEN start_tangent_deg IS NULL THEN start_total
-    ELSE start_total
-  END AS start_total_value,
+  (
+    GREATEST(start_left, start_right)
+    - ((GREATEST(start_left, start_right) - LEAST(start_left, start_right)) / 10)
+  ) AS start_total_value,
   CASE
     WHEN start_tangent_deg IS NULL THEN start_right - start_left
     ELSE (
@@ -395,10 +391,10 @@ SELECT
     WHEN COS(RADIANS(end_tangent_deg) - azimuth_rad) >= 0 THEN end_right
     ELSE end_left
   END AS end_right_value,
-  CASE
-    WHEN end_tangent_deg IS NULL THEN end_total
-    ELSE end_total
-  END AS end_total_value,
+  (
+    GREATEST(end_left, end_right)
+    - ((GREATEST(end_left, end_right) - LEAST(end_left, end_right)) / 10)
+  ) AS end_total_value,
   CASE
     WHEN end_tangent_deg IS NULL THEN end_right - end_left
     ELSE (
