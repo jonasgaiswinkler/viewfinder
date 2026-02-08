@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from osgeo import gdal
 
 from factor_calculators.visible_area import visible_area_factors_from_split
-from factor_calculators.elevation_difference import elevation_difference_factors_from_split
+from factor_calculators.elevation import elevation_factors_from_split
 
 def perform_viewshed_analysis(
     dem_data: Dict[str, object],
@@ -104,13 +104,16 @@ def perform_viewshed_analysis(
                         tangent_dx, tangent_dy = tangent
 
                 visible_area_factors = visible_area_factors_from_split(split)
-                elevation_difference_factors = elevation_difference_factors_from_split(
+                elevation_factors = elevation_factors_from_split(
                     {
                         **split,
                         "dem_array": dem_array_for_factors,
                         "dem_nodata": dem_nodata,
                     }
                 )
+
+                elevation_difference_factors = elevation_factors.get("elevation_difference")
+                max_elevation_factors = elevation_factors.get("max_elevation")
 
                 return {
                     "lat": lat_value,
@@ -123,6 +126,7 @@ def perform_viewshed_analysis(
                     "factors": {
                         "visible_area": visible_area_factors,
                         "elevation_difference": elevation_difference_factors,
+                        "max_elevation": max_elevation_factors
                     },
                 }
 
