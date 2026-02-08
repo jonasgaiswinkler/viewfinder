@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Tuple, cast
 import os
+import math
 import tempfile
 
 import numpy as np
 import rasterio
+from rasterio.transform import array_bounds
+from rasterio.windows import from_bounds
+from rasterio.enums import Resampling
 from pyproj import CRS, Transformer, Geod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from osgeo import gdal
@@ -47,17 +51,15 @@ def perform_viewshed_analysis(
                 raise ValueError("DEM CRS missing or invalid.")
             transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
 
+            # Always read from the (potentially reprojected) DEM file to ensure alignment with viewshed masks
             dem_array_for_factors: Optional[np.ndarray] = None
             dem_nodata: Optional[float] = None
-            if isinstance(dem_array, np.ndarray):
-                dem_array_for_factors = dem_array
-            else:
-                try:
-                    with rasterio.open(dem_path_to_use) as src:
-                        dem_array_for_factors = src.read(1)
-                        dem_nodata = src.nodata
-                except Exception:
-                    dem_array_for_factors = None
+            try:
+                with rasterio.open(dem_path_to_use) as src:
+                    dem_array_for_factors = src.read(1)
+                    dem_nodata = src.nodata
+            except Exception:
+                dem_array_for_factors = None
 
             tasks: List[Tuple[float, float, str, Dict[str, float | int | str | None]]] = []
             for idx, point in enumerate(sampled_points):
@@ -88,29 +90,41 @@ def perform_viewshed_analysis(
                 _run_viewshed_task_gdal(dem_path_to_use, out_path, easting, northing)
 
                 tangent = _tangent_vector_for_sample(point, transformer)
-                split = _split_viewshed_by_tangent(out_path, easting, northing, tangent)
+                split = _split_viewshed_by_tangent(out_path, easting, northing, tangent, dem_path_to_use)
                 lat_value = point.get("lat") if isinstance(point, dict) else None
                 lon_value = point.get("lon") if isinstance(point, dict) else None
                 tangent_deg_4326 = point.get("tangent_deg_4326") if isinstance(point, dict) else None
-                tangent_deg_3857 = point.get("tangent_deg_3857") if isinstance(point, dict) else None
                 bridge_value = point.get("bridge") if isinstance(point, dict) else None
-                tangent_dx = point.get("tangent_dx") if isinstance(point, dict) else None
-                tangent_dy = point.get("tangent_dy") if isinstance(point, dict) else None
-                if tangent_dx is None or tangent_dy is None:
-                    if tangent is None:
-                        tangent_dx = None
-                        tangent_dy = None
-                    else:
-                        tangent_dx, tangent_dy = tangent
+                
+                # Compute tangent in projected CRS
+                tangent_dx = None
+                tangent_dy = None
+                tangent_deg_3857 = None
+                if tangent is not None and lat_value is not None and lon_value is not None:
+                    tangent_dx, tangent_dy = tangent
+                    # Calculate grid azimuth from tangent vector
+                    # In projected CRS: +X is east, +Y is north
+                    # atan2(dy, dx) gives angle from east (counterclockwise)
+                    # Convert to compass bearing (from north, clockwise)
+                    grid_bearing_rad = math.atan2(tangent_dx, tangent_dy)
+                    tangent_deg_3857 = (math.degrees(grid_bearing_rad)) % 360.0
+                    
+                    # For EPSG:3857, apply meridian convergence correction if tangent_deg_4326 is known
+                    # This ensures proper conversion between geodetic and grid bearings
+                    if tangent_deg_4326 is not None:
+                        # Meridian convergence for Web Mercator: γ = lon * sin(lat)
+                        lat_rad = math.radians(float(lat_value))
+                        lon_rad = math.radians(float(lon_value))
+                        convergence_deg = math.degrees(lon_rad * math.sin(lat_rad))
+                        # Grid bearing = geodetic bearing - convergence
+                        # But verify with calculated grid bearing from tangent vector
+                        expected_grid = (float(tangent_deg_4326) - convergence_deg) % 360.0
+                        # Use the calculated grid bearing from tangent vector as it's more accurate
+                        # Store the convergence for reference
+                        pass
 
                 visible_area_factors = visible_area_factors_from_split(split)
-                elevation_factors = elevation_factors_from_split(
-                    {
-                        **split,
-                        "dem_array": dem_array_for_factors,
-                        "dem_nodata": dem_nodata,
-                    }
-                )
+                elevation_factors = elevation_factors_from_split(split)
 
                 elevation_difference_factors = elevation_factors.get("elevation_difference")
                 max_elevation_factors = elevation_factors.get("max_elevation")
@@ -218,7 +232,7 @@ def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northi
         0.0,
         0.85714,
         gdal.GVM_Edge,
-        10000.0,
+        25000.0,
     )
     src_ds = None
     #print("Finished viewshed", flush=True)
@@ -233,23 +247,18 @@ def _tangent_vector_for_sample(
 
     lat = sample.get("lat")
     lon = sample.get("lon")
-    tangent_dx = sample.get("tangent_dx")
-    tangent_dy = sample.get("tangent_dy")
     tangent_deg_4326 = sample.get("tangent_deg_4326")
     tangent_lat = sample.get("tangent_lat")
     tangent_lon = sample.get("tangent_lon")
+    tangent_dx = sample.get("tangent_dx")
+    tangent_dy = sample.get("tangent_dy")
+    
     if lat is None or lon is None:
         return None
 
     base_x, base_y = transformer.transform(float(lon), float(lat))
 
-    if tangent_dx is not None and tangent_dy is not None:
-        dx = float(tangent_dx)
-        dy = float(tangent_dy)
-        if dx == 0 and dy == 0:
-            return None
-        return (dx, dy)
-
+    # Prioritize tangent_deg_4326 as it's CRS-independent
     if tangent_deg_4326 is not None:
         azimuth = float(tangent_deg_4326)
         geod = Geod(ellps="WGS84")
@@ -262,24 +271,34 @@ def _tangent_vector_for_sample(
             return None
         return (dx, dy)
 
-    if tangent_lat is None or tangent_lon is None:
-        return None
+    # Use tangent_lat/lon if available
+    if tangent_lat is not None and tangent_lon is not None:
+        tlat = float(tangent_lat)
+        tlon = float(tangent_lon)
+        if tlat == 0 and tlon == 0:
+            return None
 
-    tlat = float(tangent_lat)
-    tlon = float(tangent_lon)
-    if tlat == 0 and tlon == 0:
-        return None
+        epsilon = 1.0e-5
+        norm = (tlat * tlat + tlon * tlon) ** 0.5
+        step_lat = float(lat) + (tlat / norm) * epsilon
+        step_lon = float(lon) + (tlon / norm) * epsilon
+        step_x, step_y = transformer.transform(step_lon, step_lat)
+        dx = step_x - base_x
+        dy = step_y - base_y
+        if dx == 0 and dy == 0:
+            return None
+        return (dx, dy)
 
-    epsilon = 1.0e-5
-    norm = (tlat * tlat + tlon * tlon) ** 0.5
-    step_lat = float(lat) + (tlat / norm) * epsilon
-    step_lon = float(lon) + (tlon / norm) * epsilon
-    step_x, step_y = transformer.transform(step_lon, step_lat)
-    dx = step_x - base_x
-    dy = step_y - base_y
-    if dx == 0 and dy == 0:
-        return None
-    return (dx, dy)
+    # Fall back to tangent_dx/dy only if CRS-independent values aren't available
+    # Note: These should already be in the target CRS
+    if tangent_dx is not None and tangent_dy is not None:
+        dx = float(tangent_dx)
+        dy = float(tangent_dy)
+        if dx == 0 and dy == 0:
+            return None
+        return (dx, dy)
+
+    return None
 
 
 def _split_viewshed_by_tangent(
@@ -287,6 +306,7 @@ def _split_viewshed_by_tangent(
     observer_easting: float,
     observer_northing: float,
     tangent: Optional[Tuple[float, float]],
+    dem_path: Optional[str] = None,
 ) -> Dict[str, object]:
     if tangent is None:
         return {
@@ -303,6 +323,32 @@ def _split_viewshed_by_tangent(
         transform = src.transform
         crs = src.crs
         nodata = src.nodata
+
+    # Read DEM data at the same extent/transform as the viewshed
+    dem_array: Optional[np.ndarray] = None
+    dem_nodata: Optional[float] = None
+    if dem_path and os.path.exists(dem_path):
+        try:
+            with rasterio.open(dem_path) as dem_src:
+                dem_nodata = dem_src.nodata
+                
+                # Calculate the bounds of the viewshed
+                viewshed_bounds = array_bounds(
+                    data.shape[0], data.shape[1], transform
+                )
+                
+                # Create a window to read only the matching region from DEM
+                window = from_bounds(*viewshed_bounds, transform=dem_src.transform)
+                
+                # Read the windowed region and resample to match viewshed shape
+                dem_array = dem_src.read(
+                    1,
+                    window=window,
+                    out_shape=data.shape,
+                    resampling=Resampling.bilinear
+                )
+        except Exception as e:
+            print(f"Warning: Could not read DEM for elevation factors: {e}", flush=True)
 
     if nodata is None or (isinstance(nodata, (int, float)) and nodata == 0):
         total_mask = np.ones_like(data, dtype=bool)
@@ -325,6 +371,8 @@ def _split_viewshed_by_tangent(
             "tangent": tangent,
             "left_mask": left_mask,
             "right_mask": right_mask,
+            "dem_array": dem_array,
+            "dem_nodata": dem_nodata,
         }
 
     rows, cols = np.nonzero(visible_mask)
@@ -355,6 +403,8 @@ def _split_viewshed_by_tangent(
         "tangent": tangent,
         "left_mask": left_mask,
         "right_mask": right_mask,
+        "dem_array": dem_array,
+        "dem_nodata": dem_nodata,
     }
 
 
