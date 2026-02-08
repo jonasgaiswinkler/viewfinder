@@ -16,11 +16,9 @@ def calculate_elevation_difference_factors(
 	left_value = float(left_diff) / float(normalize_by)
 	right_value = float(right_diff) / float(normalize_by)
 
-	total_value = (left_value + right_value) / 2.0
 	relative_value = right_value - left_value
 
 	return {
-		"total_value": total_value,
 		"left_value": left_value,
 		"right_value": right_value,
 		"relative_value": relative_value,
