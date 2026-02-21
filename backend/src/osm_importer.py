@@ -29,9 +29,9 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     out body;
     """
     
-    logger.debug("import_ways: Downloading ways with query:", overpass_query)
+    logger.debug(f"import_ways: Downloading ways with query: {overpass_query}")
     response = requests.get(overpass_url, params={'data': overpass_query})
-    logger.debug("import_ways: Overpass API response status code:", response.status_code)
+    logger.debug(f"import_ways: Overpass API response status code: {response.status_code}")
     response.raise_for_status()  # Raise an error for bad responses
     
     # Write XML to temp file for osm2pgrouting

@@ -8,6 +8,8 @@ from rasterio.enums import Resampling
 from pyproj import CRS
 import tempfile
 from loguru import logger
+import numpy as np
+from rasterio.transform import array_bounds
 
 
 COPERNICUS_DEM_90M_BUCKET = "https://copernicus-dem-90m.s3.amazonaws.com"
@@ -92,18 +94,28 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
                 logger.debug(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
                 target_crs = CRS.from_epsg(3857)
                 
-                # Calculate transform for reprojection
+                # Calculate source bounds from the merged mosaic transform and shape
+                src_height = mosaic.shape[1]
+                src_width = mosaic.shape[2]
+                minx, miny, maxx, maxy = array_bounds(src_height, src_width, out_trans)
+
+                # Calculate transform and destination size for reprojection
                 transform, width, height = rasterio.warp.calculate_default_transform(
-                    source_crs, target_crs, mosaic.shape[2], mosaic.shape[1],
-                    left=min_lon, bottom=min_lat, right=max_lon, top=max_lat
+                    source_crs, target_crs, src_width, src_height,
+                    left=minx, bottom=miny, right=maxx, top=maxy
                 )
-                
-                # Create output array
-                reprojected = mosaic.copy()
-                reprojected.fill(0)
-                reprojected = reprojected[:, :height, :width]
-                
-                # Reproject
+
+                # Ensure destination size is defined and convert to ints for numpy
+                if width is None or height is None:
+                    raise ValueError("Reprojection produced undefined destination width/height")
+                width = int(width)
+                height = int(height)
+                bands = int(mosaic.shape[0])
+
+                # Allocate destination array with the correct shape and dtype
+                reprojected = np.zeros((bands, height, width), dtype=mosaic.dtype)
+
+                # Reproject into the correctly sized destination
                 rasterio.warp.reproject(
                     source=mosaic[0],
                     destination=reprojected[0],
@@ -113,7 +125,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
                     dst_crs=target_crs,
                     resampling=Resampling.bilinear
                 )
-                
+
                 final_array = reprojected[0]
                 final_transform = transform
                 final_crs = target_crs
