@@ -3,8 +3,7 @@ from typing import Any, Dict, Iterable, List
 
 from fastapi import FastAPI, HTTPException, APIRouter, Depends
 from pydantic import BaseModel, model_validator
-from osm_downloader import download_ways
-import osm_ways_saver
+from osm_importer import import_ways
 from way_sampler import sample_points_along_ways
 from dem_retriever import retrieve_dem
 from viewshed_analyzer import perform_viewshed_analysis
@@ -81,17 +80,16 @@ async def compute_scenicness(
     try:
         bounding_box = request.bounding_box.model_dump()
         way_type = request.way_type
-        osm_ways = download_ways(bounding_box, way_type)
-        await osm_ways_saver.save_ways_to_db(
-            osm_ways, way_type=way_type.value, session=session, bounding_box=bounding_box
-        )
-        sampled_points = await sample_points_along_ways(session=session, way_type=way_type.value, bounding_box=bounding_box)    
+
+        await import_ways(session, bounding_box, way_type.value)
+
+        sampled_points = await sample_points_along_ways(session=session, bounding_box=bounding_box)
+
         dem_data = retrieve_dem(bounding_box, write_geotiff=True)
         viewshed_results = perform_viewshed_analysis(dem_data, sampled_points)
         await save_viewshed_results_to_db(
             viewshed_results,
             session=session,
-            bounding_box=bounding_box,
         )
         #return _viewshed_results_to_geojson(viewshed_results)
         return {"status": "success", "num_viewshed_points": len(viewshed_results)}

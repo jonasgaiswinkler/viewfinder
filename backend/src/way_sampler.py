@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def sample_points_along_ways(
     session: AsyncSession,
     spacing_m: float = 200.0,
-    way_type: Optional[str] = None,
     bounding_box: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, float | int | str | None]]:
     if spacing_m <= 0:
@@ -19,10 +18,9 @@ async def sample_points_along_ways(
     tangent_step_m = max(1.0, min(10.0, spacing_m * 0.05))
     segmentize_m = max(2.0, min(10.0, spacing_m * 0.05))
 
-    params = {
+    params: Dict[str, float | None] = {
         "spacing_m": float(spacing_m),
         "tangent_step_m": float(tangent_step_m),
-        "way_type": way_type,
         "segmentize_m": float(segmentize_m),
         "min_lon": None,
         "min_lat": None,
@@ -44,15 +42,14 @@ async def sample_points_along_ways(
         """
         WITH filtered AS (
             SELECT
-                segment_id,
-                bridge,
-                geom
-            FROM osm_ways_topo
-            WHERE (tunnel IS DISTINCT FROM TRUE)
-              AND (CAST(:way_type AS osm_way_type) IS NULL OR way_type = CAST(:way_type AS osm_way_type))
+                gid,
+                COALESCE(bridge, FALSE) AS bridge,
+                the_geom AS geom
+            FROM ways
+            WHERE COALESCE(tunnel, FALSE) IS DISTINCT FROM TRUE
               AND (
                     CAST(:min_lon AS double precision) IS NULL
-                    OR geom && ST_MakeEnvelope(
+                    OR the_geom && ST_MakeEnvelope(
                         CAST(:min_lon AS double precision),
                         CAST(:min_lat AS double precision),
                         CAST(:max_lon AS double precision),
@@ -63,7 +60,7 @@ async def sample_points_along_ways(
         ),
         lengths AS (
             SELECT
-                segment_id,
+                gid,
                 bridge,
                 geom,
                 ST_Segmentize(geom::geography, CAST(:segmentize_m AS double precision)) AS geom_geog,
@@ -78,13 +75,13 @@ async def sample_points_along_ways(
                         )
                     ELSE 0.0
                 END AS offset_m
-                        FROM filtered
-                        WHERE geom IS NOT NULL
-                            AND ST_GeometryType(geom) = 'ST_LineString'
+            FROM filtered
+            WHERE geom IS NOT NULL
+              AND ST_GeometryType(geom) = 'ST_LineString'
         ),
         samples AS (
             SELECT
-                segment_id,
+                gid,
                 bridge,
                 length_m,
                 gs.dist_m::double precision AS dist_m,
@@ -104,11 +101,14 @@ async def sample_points_along_ways(
             ST_X(point_next::geometry) - ST_X(point_prev::geometry) AS tangent_lon,
             DEGREES(ST_Azimuth(point_prev, point_next)) AS tangent_azimuth_deg,
             DEGREES(ST_Azimuth(point_prev_3857, point_next_3857)) AS tangent_azimuth_deg_3857,
-            bridge
+            s.bridge,
+            s.gid AS edge_id,
+            s.frac AS fraction
         FROM (
             SELECT
-                samples.segment_id,
+                samples.gid,
                 samples.dist_m,
+                samples.frac,
                 samples.bridge,
                 ST_LineInterpolatePoint(lengths.geom_geog, samples.frac) AS point,
                 ST_LineInterpolatePoint(
@@ -134,8 +134,7 @@ async def sample_points_along_ways(
                     3857
                 ) AS point_next_3857
             FROM samples
-            JOIN lengths ON lengths.segment_id = samples.segment_id
-                AND lengths.bridge IS NOT DISTINCT FROM samples.bridge
+            JOIN lengths ON lengths.gid = samples.gid
         ) AS s
         WHERE (
             CAST(:min_lon AS double precision) IS NULL
@@ -150,12 +149,13 @@ async def sample_points_along_ways(
                 )
             )
         )
-        ORDER BY s.segment_id, s.dist_m
+        ORDER BY s.gid, s.dist_m
         """
     )
 
     result = await session.execute(sql, params)
     rows: Sequence[Row] = result.fetchall()
+    print(f"sample_points_along_ways: {len(rows)} points sampled")
     return [
         {
             "lat": float(row[0]),
@@ -164,7 +164,9 @@ async def sample_points_along_ways(
             "tangent_lon": float(row[3]) if row[3] is not None else None,
             "tangent_deg_4326": float(row[4]) if row[4] is not None else None,
             "tangent_deg_3857": float(row[5]) if row[5] is not None else None,
-            "bridge": bool(row[6]) if row[6] is not None else None,
+            "bridge": bool(row[6]) if row[6] is not None else False,
+            "edge_id": int(row[7]),
+            "fraction": float(row[8]),
         }
         for row in rows
     ]

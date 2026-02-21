@@ -133,6 +133,8 @@ def perform_viewshed_analysis(
                     "lat": lat_value,
                     "lon": lon_value,
                     "bridge": bridge_value,
+                    "edge_id": point.get("edge_id") if isinstance(point, dict) else None,
+                    "fraction": point.get("fraction") if isinstance(point, dict) else None,
                     "tangent_dx": tangent_dx,
                     "tangent_dy": tangent_dy,
                     "tangent_deg_4326": tangent_deg_4326,

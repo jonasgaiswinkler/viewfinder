@@ -22,7 +22,6 @@ def _to_float(value: Any) -> Optional[float]:
 async def save_viewshed_results_to_db(
     viewshed_results: Iterable[Dict[str, Any]],
     session: AsyncSession,
-    bounding_box: Optional[Dict[str, float]] = None,
 ) -> int:
     rows: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for result in viewshed_results:
@@ -36,6 +35,8 @@ async def save_viewshed_results_to_db(
             "lat": float(lat),
             "lon": float(lon),
             "bridge": result.get("bridge"),
+            "edge_id": result.get("edge_id"),
+            "fraction": _to_float(result.get("fraction")),
             "tangent_dx": _to_float(result.get("tangent_dx")),
             "tangent_dy": _to_float(result.get("tangent_dy")),
             "tangent_deg_4326": _to_float(result.get("tangent_deg_4326")),
@@ -44,27 +45,7 @@ async def save_viewshed_results_to_db(
         factors = result.get("factors")
         rows.append((row, factors if isinstance(factors, dict) else {}))
 
-    if bounding_box:
-        delete_sql = text(
-            """
-            DELETE FROM scenicness_points
-            WHERE geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
-            """
-        )
-        await session.execute(
-            delete_sql,
-            {
-                "min_lon": bounding_box["min_lon"],
-                "min_lat": bounding_box["min_lat"],
-                "max_lon": bounding_box["max_lon"],
-                "max_lat": bounding_box["max_lat"],
-            },
-        )
 
-    if not rows:
-        if bounding_box:
-            await session.commit()
-        return 0
 
     print(f"Inserting {len(rows)} scenicness points")
 
@@ -79,7 +60,8 @@ async def save_viewshed_results_to_db(
         INSERT INTO scenicness_points (
             geom,
             bridge,
-            way_id,
+            edge_id,
+            fraction,
             tangent_dx,
             tangent_dy,
             tangent_deg_4326,
@@ -88,12 +70,8 @@ async def save_viewshed_results_to_db(
         VALUES (
             ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
             CAST(:bridge AS boolean),
-            (
-                SELECT way_id
-                FROM osm_ways
-                ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
-                LIMIT 1
-            ),
+            CAST(:edge_id AS bigint),
+            CAST(:fraction AS double precision),
             CAST(:tangent_dx AS double precision),
             CAST(:tangent_dy AS double precision),
             CAST(:tangent_deg_4326 AS double precision),
@@ -148,7 +126,11 @@ async def save_viewshed_results_to_db(
             )
 
     await session.commit()
-    print("Refreshing scenicness_segments materialized view")
-    await session.execute(text("REFRESH MATERIALIZED VIEW scenicness_segments"))
+
+    # Refresh the scenicness_segments table
+    print("Refreshing scenicness_segments table")
+    await session.execute(text("SELECT refresh_scenicness_segments()"))
     await session.commit()
+
+    print(f"Inserted {len(rows)} scenicness points")
     return len(rows)

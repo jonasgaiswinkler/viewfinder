@@ -1,0 +1,60 @@
+services:
+  viewfinder_db:
+    image: pgrouting/pgrouting:18-3.6-4.0
+    container_name: viewfinder_db
+    restart: always
+    ports:
+      - 5433:5432
+    env_file:
+      - .env
+    volumes:
+      - ${VIEWFINDER_LOCATION}/db_data:/var/lib/postgresql
+    networks:
+      - viewfinder
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U postgres -d postgres
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  viewfinder_redis:
+    image: redis:latest
+    container_name: viewfinder_redis
+    networks:
+      - viewfinder
+  viewfinder_tegola:
+    image: gospatial/tegola:latest
+    container_name: viewfinder_tegola
+    depends_on:
+      viewfinder_db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - 9999:8080
+    volumes:
+      - ${VIEWFINDER_LOCATION}/tegola:/data
+    command: |
+      serve --config /data/config.toml
+    env_file:
+      - .env
+    networks:
+      - viewfinder
+      - caddy_caddy
+  viewfinder_frontend:
+    restart: always
+    container_name: viewfinder_frontend
+    depends_on:
+      viewfinder_db:
+        condition: service_healthy
+    image: registry.jpg-fdms.eu/jpg/viewfinder/frontend
+    ports:
+      - 9998:3000
+    networks:
+      - caddy_caddy
+    environment:
+      - PUBLIC_TEGOLA_URL=https://viewfinder.jonasgaiswinkler.eu
+networks:
+  viewfinder: {}
+  caddy_caddy:
+    external: true
