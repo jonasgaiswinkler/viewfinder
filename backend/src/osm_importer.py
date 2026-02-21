@@ -75,16 +75,21 @@ async def _cleanup_bounding_box(
         logger.debug("cleanup_bounding_box: ways table does not exist yet, skipping cleanup")
         return
 
-    # 1. Delete scenicness data for edges in the bounding box
-    await session.execute(text("""
-        DELETE FROM scenicness_point_factor_values
-        WHERE point_id IN (
-            SELECT sp.id FROM scenicness_points sp
-            JOIN ways w ON w.gid = sp.edge_id
-            WHERE w.the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
-        )
+    # 1. Collect vertex IDs that could become orphaned (before deleting ways)
+    logger.debug(f"cleanup_bounding_box: collecting affected vertex IDs")
+    result = await session.execute(text("""
+        SELECT DISTINCT v_id FROM (
+            SELECT source AS v_id FROM ways
+            WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+            UNION
+            SELECT target AS v_id FROM ways
+            WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+        ) sub
     """), params)
+    affected_vertex_ids = [row[0] for row in result.fetchall()]
 
+    # 2. Delete scenicness data for edges in the bounding box
+    logger.debug(f"cleanup_bounding_box: scenicness_points")
     await session.execute(text("""
         DELETE FROM scenicness_points
         WHERE edge_id IN (
@@ -93,21 +98,44 @@ async def _cleanup_bounding_box(
         )
     """), params)
 
-    # 2. Delete edges in the bounding box
+    # 3. Delete edges in the bounding box
+    logger.debug(f"cleanup_bounding_box: ways")
     await session.execute(text("""
         DELETE FROM ways
         WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
     """), params)
 
-    # 3. Remove orphaned vertices (vertices with no remaining edges)
-    await session.execute(text("""
-        DELETE FROM ways_vertices_pgr
-        WHERE id NOT IN (
-            SELECT source FROM ways
-            UNION
-            SELECT target FROM ways
-        )
-    """))
+    # 4. Remove orphaned vertices — only check the ones we know were affected
+    logger.debug(f"cleanup_bounding_box: ways_vertices_pgr ({len(affected_vertex_ids)} candidates)")
+    if affected_vertex_ids:
+        # Find which candidates are still referenced by remaining ways
+        still_referenced = await session.execute(text("""
+            SELECT DISTINCT v_id FROM (
+                SELECT source AS v_id FROM ways WHERE source = ANY(:vertex_ids)
+                UNION
+                SELECT target AS v_id FROM ways WHERE target = ANY(:vertex_ids)
+            ) sub
+        """), {"vertex_ids": affected_vertex_ids})
+        still_referenced_ids = {row[0] for row in still_referenced.fetchall()}
+
+        # Orphans = candidates that are no longer referenced
+        orphan_ids = [v for v in affected_vertex_ids if v not in still_referenced_ids]
+        logger.debug(f"cleanup_bounding_box: deleting {len(orphan_ids)} orphaned vertices")
+
+        if orphan_ids:
+            # Disable FK triggers to avoid per-row constraint checks (the main bottleneck)
+            await session.execute(text(
+                "ALTER TABLE ways_vertices_pgr DISABLE TRIGGER ALL"
+            ))
+            await session.execute(text(
+                "DELETE FROM ways_vertices_pgr WHERE id = ANY(:orphan_ids)"
+            ), {"orphan_ids": orphan_ids})
+            await session.execute(text(
+                "ALTER TABLE ways_vertices_pgr ENABLE TRIGGER ALL"
+            ))
+            logger.debug(f"cleanup_bounding_box: deleted {len(orphan_ids)} orphaned vertices")
+
+    logger.debug(f"cleanup_bounding_box: precommit")
 
     await session.commit()
     logger.debug(f"cleanup_bounding_box: Cleaned up area {bounding_box}")
