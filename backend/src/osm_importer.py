@@ -7,6 +7,7 @@ import requests
 import xml.etree.ElementTree as ET
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way_type: str) -> None:
     """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info."""
@@ -28,16 +29,16 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     out body;
     """
     
-    print("download_ways: Downloading ways with query:", overpass_query)
+    logger.debug("import_ways: Downloading ways with query:", overpass_query)
     response = requests.get(overpass_url, params={'data': overpass_query})
-    print("download_ways: Overpass API response status code:", response.status_code)
+    logger.debug("import_ways: Overpass API response status code:", response.status_code)
     response.raise_for_status()  # Raise an error for bad responses
     
     # Write XML to temp file for osm2pgrouting
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
     tmp.write(response.text)
     tmp.close()
-    print(f"download_ways: Saved OSM XML to {tmp.name}")
+    logger.debug(f"import_ways: Saved OSM XML to {tmp.name}")
 
     await _cleanup_bounding_box(session, bounding_box)
 
@@ -61,6 +62,8 @@ async def _cleanup_bounding_box(
         "max_lat": bounding_box["max_lat"],
     }
 
+    logger.debug(f"cleanup_bounding_box: Cleaning up area {bounding_box}")
+
     # Check if pgRouting tables exist yet
     ways_exists = await session.execute(text("""
         SELECT EXISTS (
@@ -69,7 +72,7 @@ async def _cleanup_bounding_box(
         )
     """))
     if not ways_exists.scalar():
-        print("cleanup_bounding_box: ways table does not exist yet, skipping cleanup")
+        logger.debug("cleanup_bounding_box: ways table does not exist yet, skipping cleanup")
         return
 
     # 1. Delete scenicness data for edges in the bounding box
@@ -107,7 +110,7 @@ async def _cleanup_bounding_box(
     """))
 
     await session.commit()
-    print(f"cleanup_bounding_box: Cleaned up area {bounding_box}")
+    logger.debug(f"cleanup_bounding_box: Cleaned up area {bounding_box}")
 
 def _parse_tunnel_bridge_from_osm(osm_path: str) -> Dict[int, Tuple[bool, bool]]:
     """Parse .osm XML and return {osm_way_id: (is_tunnel, is_bridge)} for each way."""
@@ -173,7 +176,7 @@ async def _update_tunnel_bridge(
         count += result.rowcount  # type: ignore[union-attr]
 
     await session.commit()
-    print(f"update_tunnel_bridge: Updated {count} ways")
+    logger.debug(f"update_tunnel_bridge: Updated {count} ways")
     return count
 
 async def _import_with_pgrouting(
@@ -222,13 +225,13 @@ async def _import_with_pgrouting(
     if clean:
         cmd.append("--clean")
 
-    print(f"import_with_pgrouting: Running {' '.join(cmd)}")
+    logger.debug(f"import_with_pgrouting: Running osm2pgrouting")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"osm2pgrouting failed (code {result.returncode}):\n{result.stderr}"
         )
-    print(f"import_with_pgrouting: Success\n{result.stdout}")
+    logger.debug(f"import_with_pgrouting: Success run osm2pgrouting")
 
     await _update_tunnel_bridge(session, osm_path)
     # Clean up temp file

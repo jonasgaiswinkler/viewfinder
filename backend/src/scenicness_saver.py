@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -47,7 +48,7 @@ async def save_viewshed_results_to_db(
 
 
 
-    print(f"Inserting {len(rows)} scenicness points")
+    logger.debug(f"Inserting {len(rows)} scenicness points")
 
     factor_map: Dict[str, int] = {}
     factor_result = await session.execute(text("SELECT id, name FROM scenicness_factors"))
@@ -128,9 +129,9 @@ async def save_viewshed_results_to_db(
     await session.commit()
 
     # Refresh the scenicness_segments table
-    print("Refreshing scenicness_segments table")
+    logger.debug("Refreshing scenicness_segments table")
     await session.execute(text("SELECT refresh_scenicness_segments()"))
     await session.commit()
 
-    print(f"Inserted {len(rows)} scenicness points")
+    logger.debug(f"Inserted {len(rows)} scenicness points")
     return len(rows)

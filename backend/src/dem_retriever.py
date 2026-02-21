@@ -7,6 +7,7 @@ from rasterio.merge import merge
 from rasterio.enums import Resampling
 from pyproj import CRS
 import tempfile
+from loguru import logger
 
 
 COPERNICUS_DEM_90M_BUCKET = "https://copernicus-dem-90m.s3.amazonaws.com"
@@ -56,7 +57,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     min_lon = max(-180.0, min_lon - lon_pad)
     max_lon = min(180.0, max_lon + lon_pad)
 
-    print(f"retrieve_dem: bbox=({min_lat}, {min_lon}, {max_lat}, {max_lon})")
+    logger.debug(f"retrieve_dem: bbox=({min_lat}, {min_lon}, {max_lat}, {max_lon})")
 
     if min_lat >= max_lat or min_lon >= max_lon:
         raise ValueError("Invalid bounding box. Expected min < max for both latitude and longitude.")
@@ -64,7 +65,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     tile_ids = list(_tiles_for_bbox(min_lat, min_lon, max_lat, max_lon))
     tile_urls = [_tile_url(tile_id) for tile_id in tile_ids]
 
-    print(f"retrieve_dem: tiles={len(tile_ids)}")
+    logger.debug(f"retrieve_dem: tiles={len(tile_ids)}")
 
     datasets: List[rasterio.io.DatasetReader] = [] # type: ignore
     try:
@@ -72,23 +73,23 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
             for url in tile_urls:
                 try:
                     datasets.append(rasterio.open(url))
-                    print(f"retrieve_dem: opened {url}")
+                    logger.debug(f"retrieve_dem: opened {url}")
                 except RasterioIOError:
-                    print(f"retrieve_dem: missing {url}")
+                    logger.debug(f"retrieve_dem: missing {url}")
                     continue
 
             if not datasets:
                 raise ValueError("No Copernicus DEM tiles found for the provided bounding box.")
 
             mosaic, out_trans = merge(datasets, bounds=(min_lon, min_lat, max_lon, max_lat))
-            print(f"retrieve_dem: mosaic shape={mosaic.shape}")
+            logger.debug(f"retrieve_dem: mosaic shape={mosaic.shape}")
 
             source_crs = datasets[0].crs
             
             # Reproject to EPSG:3857 (Web Mercator in meters) for viewshed analysis
             source_crs_obj = CRS.from_user_input(source_crs)
             if source_crs_obj.is_geographic:
-                print(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
+                logger.debug(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
                 target_crs = CRS.from_epsg(3857)
                 
                 # Calculate transform for reprojection

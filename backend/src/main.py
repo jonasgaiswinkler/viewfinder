@@ -1,5 +1,6 @@
 from enum import Enum
 from typing import Any, Dict, Iterable, List
+from loguru import logger
 
 from fastapi import FastAPI, HTTPException, APIRouter, Depends
 from pydantic import BaseModel, model_validator
@@ -78,6 +79,7 @@ async def compute_scenicness(
     session=Depends(get_db),
 ):
     try:
+        logger.info(f"Received request to compute scenicness for bounding box: {request.bounding_box} and way type: {request.way_type}")
         bounding_box = request.bounding_box.model_dump()
         way_type = request.way_type
 
@@ -92,8 +94,10 @@ async def compute_scenicness(
             session=session,
         )
         #return _viewshed_results_to_geojson(viewshed_results)
+        logger.info(f"Scenicness computation completed successfully for bounding box: {request.bounding_box} and way type: {request.way_type}")
         return {"status": "success", "num_viewshed_points": len(viewshed_results)}
     except Exception as e:
+        logger.error(f"Error occurred while computing scenicness: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 app.include_router(router)
