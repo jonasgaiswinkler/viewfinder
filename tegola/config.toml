@@ -1,0 +1,60 @@
+[webserver]
+port = ":8080"
+
+[webserver.headers]
+Cache-Control = "s-maxage=3600"
+Access-Control-Allow-Origin = "*"
+
+[cache]
+type = "redis"
+address = "${REDIS_HOST}"
+password = "${REDIS_PASSWORD}"
+ttl = 10
+max_zoom = 18
+ssl = "${TEGOLA_REDIS_SSL}"
+db = 1
+
+[[providers]]
+name = "viewfinder"
+type = "mvt_postgis"
+uri = "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_HOST}:${DB_PORT}/${POSTGRES_DB}?sslmode=${TEGOLA_POSTGIS_SSL}" # PostGIS connection string (required)
+srid = 4326             
+
+  [[providers.layers]]
+  name = "scenicness_segments"
+  geometry_fieldname = "geom"
+  geometry_type = "linestring"
+  sql = "SELECT ST_AsMVTGeom(geom, !BBOX!) AS geom, start_id, end_id, chain_id, start_left_value, start_right_value, start_total_value, start_relative_value, end_left_value, end_right_value, end_total_value, end_relative_value FROM scenicness_segments WHERE geom && !BBOX!"
+
+  [[providers.layers]]
+  name = "scenicness_points"
+  geometry_fieldname = "geom"
+  geometry_type = "point"
+  id_fieldname = "id"
+  sql = "SELECT ST_AsMVTGeom(geom, !BBOX!) AS geom, id, bridge, edge_id, tangent_dx, tangent_dy, tangent_deg_4326, tangent_deg_3857 FROM scenicness_points WHERE geom && !BBOX!"
+
+  [[providers.layers]]
+  name = "osm_ways"
+  geometry_fieldname = "geom"
+  geometry_type = "linestring"
+  id_fieldname = "gid"
+  sql = "SELECT ST_AsMVTGeom(the_geom, !BBOX!) AS geom, gid, osm_id, tunnel, bridge FROM ways WHERE the_geom && !BBOX!"
+
+[[maps]]
+name = "viewfinder"
+center = [7.0982, 50.7374, 5.0]
+
+  [[maps.layers]]
+  provider_layer = "viewfinder.scenicness_segments"
+  min_zoom = 5
+  max_zoom = 20
+
+  [[maps.layers]]
+  provider_layer = "viewfinder.osm_ways"
+  min_zoom = 5
+  max_zoom = 20
+
+  [[maps.layers]]
+  provider_layer = "viewfinder.scenicness_points"
+  min_zoom = 14
+  max_zoom = 20
