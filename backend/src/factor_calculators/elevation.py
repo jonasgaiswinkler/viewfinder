@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple, cast
 
 import numpy as np
+from config import ELEVATION_NORMALIZE
 
 
 def calculate_elevation_factors(
@@ -53,9 +54,9 @@ def _masked_min_max(
 
 
 def elevation_factors_from_split(
-        split: Dict[str, object],
-        *,
-        normalize_by: float = 9000.0,
+    split: Dict[str, object],
+    *,
+    normalize_by: float = ELEVATION_NORMALIZE,
 ) -> Dict[str, Dict[str, float]]:
     left_mask = split.get("left_mask") if isinstance(split, dict) else None
     right_mask = split.get("right_mask") if isinstance(split, dict) else None

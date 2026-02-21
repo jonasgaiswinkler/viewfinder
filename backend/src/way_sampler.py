@@ -5,11 +5,13 @@ from typing import Dict, List, Optional, Sequence
 from sqlalchemy import text
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
+from config import SAMPLING_SPACING_M
 
 
 async def sample_points_along_ways(
     session: AsyncSession,
-    spacing_m: float = 200.0,
+    spacing_m: float = SAMPLING_SPACING_M,
     bounding_box: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, float | int | str | None]]:
     if spacing_m <= 0:
@@ -155,7 +157,7 @@ async def sample_points_along_ways(
 
     result = await session.execute(sql, params)
     rows: Sequence[Row] = result.fetchall()
-    print(f"sample_points_along_ways: {len(rows)} points sampled")
+    logger.debug(f"sample_points_along_ways: {len(rows)} points sampled")
     return [
         {
             "lat": float(row[0]),

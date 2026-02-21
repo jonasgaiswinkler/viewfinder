@@ -7,6 +7,10 @@ from rasterio.merge import merge
 from rasterio.enums import Resampling
 from pyproj import CRS
 import tempfile
+from loguru import logger
+import numpy as np
+from rasterio.transform import array_bounds
+from config import RANGE_KM
 
 
 COPERNICUS_DEM_90M_BUCKET = "https://copernicus-dem-90m.s3.amazonaws.com"
@@ -44,7 +48,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     max_lat = bounding_box["max_lat"]
     max_lon = bounding_box["max_lon"]
 
-    range_km = 25.0
+    range_km = RANGE_KM
     km_per_degree_lat = 111.32
     center_lat = (min_lat + max_lat) / 2.0
     km_per_degree_lon = max(0.000001, km_per_degree_lat * math.cos(math.radians(center_lat)))
@@ -56,7 +60,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     min_lon = max(-180.0, min_lon - lon_pad)
     max_lon = min(180.0, max_lon + lon_pad)
 
-    print(f"retrieve_dem: bbox=({min_lat}, {min_lon}, {max_lat}, {max_lon})")
+    logger.debug(f"retrieve_dem: bbox=({min_lat}, {min_lon}, {max_lat}, {max_lon})")
 
     if min_lat >= max_lat or min_lon >= max_lon:
         raise ValueError("Invalid bounding box. Expected min < max for both latitude and longitude.")
@@ -64,7 +68,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     tile_ids = list(_tiles_for_bbox(min_lat, min_lon, max_lat, max_lon))
     tile_urls = [_tile_url(tile_id) for tile_id in tile_ids]
 
-    print(f"retrieve_dem: tiles={len(tile_ids)}")
+    logger.debug(f"retrieve_dem: tiles={len(tile_ids)}")
 
     datasets: List[rasterio.io.DatasetReader] = [] # type: ignore
     try:
@@ -72,37 +76,47 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
             for url in tile_urls:
                 try:
                     datasets.append(rasterio.open(url))
-                    print(f"retrieve_dem: opened {url}")
+                    logger.debug(f"retrieve_dem: opened {url}")
                 except RasterioIOError:
-                    print(f"retrieve_dem: missing {url}")
+                    logger.debug(f"retrieve_dem: missing {url}")
                     continue
 
             if not datasets:
                 raise ValueError("No Copernicus DEM tiles found for the provided bounding box.")
 
             mosaic, out_trans = merge(datasets, bounds=(min_lon, min_lat, max_lon, max_lat))
-            print(f"retrieve_dem: mosaic shape={mosaic.shape}")
+            logger.debug(f"retrieve_dem: mosaic shape={mosaic.shape}")
 
             source_crs = datasets[0].crs
             
             # Reproject to EPSG:3857 (Web Mercator in meters) for viewshed analysis
             source_crs_obj = CRS.from_user_input(source_crs)
             if source_crs_obj.is_geographic:
-                print(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
+                logger.debug(f"retrieve_dem: reprojecting from {source_crs} to EPSG:3857")
                 target_crs = CRS.from_epsg(3857)
                 
-                # Calculate transform for reprojection
+                # Calculate source bounds from the merged mosaic transform and shape
+                src_height = mosaic.shape[1]
+                src_width = mosaic.shape[2]
+                minx, miny, maxx, maxy = array_bounds(src_height, src_width, out_trans)
+
+                # Calculate transform and destination size for reprojection
                 transform, width, height = rasterio.warp.calculate_default_transform(
-                    source_crs, target_crs, mosaic.shape[2], mosaic.shape[1],
-                    left=min_lon, bottom=min_lat, right=max_lon, top=max_lat
+                    source_crs, target_crs, src_width, src_height,
+                    left=minx, bottom=miny, right=maxx, top=maxy
                 )
-                
-                # Create output array
-                reprojected = mosaic.copy()
-                reprojected.fill(0)
-                reprojected = reprojected[:, :height, :width]
-                
-                # Reproject
+
+                # Ensure destination size is defined and convert to ints for numpy
+                if width is None or height is None:
+                    raise ValueError("Reprojection produced undefined destination width/height")
+                width = int(width)
+                height = int(height)
+                bands = int(mosaic.shape[0])
+
+                # Allocate destination array with the correct shape and dtype
+                reprojected = np.zeros((bands, height, width), dtype=mosaic.dtype)
+
+                # Reproject into the correctly sized destination
                 rasterio.warp.reproject(
                     source=mosaic[0],
                     destination=reprojected[0],
@@ -112,7 +126,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
                     dst_crs=target_crs,
                     resampling=Resampling.bilinear
                 )
-                
+
                 final_array = reprojected[0]
                 final_transform = transform
                 final_crs = target_crs

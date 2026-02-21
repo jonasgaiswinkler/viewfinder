@@ -13,6 +13,13 @@ from rasterio.enums import Resampling
 from pyproj import CRS, Transformer, Geod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from osgeo import gdal
+try:
+    if hasattr(gdal, "UseExceptions"):
+        gdal.UseExceptions()
+except Exception:
+    pass
+from loguru import logger
+from config import RANGE_KM
 
 from factor_calculators.visible_area import visible_area_factors_from_split
 from factor_calculators.elevation import elevation_factors_from_split
@@ -22,7 +29,7 @@ def perform_viewshed_analysis(
     sampled_points: Optional[Sequence[Dict[str, float | int | str | None]]] = None,
     max_workers: Optional[int] = None,
 ):
-    print("Starting viewshed analysis", flush=True)
+    logger.debug("Starting viewshed analysis", flush=True)
     if not sampled_points:
         array = dem_data["array"]
         if isinstance(array, np.ndarray):
@@ -50,17 +57,7 @@ def perform_viewshed_analysis(
             if dem_crs is None:
                 raise ValueError("DEM CRS missing or invalid.")
             transformer = Transformer.from_crs("EPSG:4326", dem_crs, always_xy=True)
-
-            # Always read from the (potentially reprojected) DEM file to ensure alignment with viewshed masks
-            dem_array_for_factors: Optional[np.ndarray] = None
-            dem_nodata: Optional[float] = None
-            try:
-                with rasterio.open(dem_path_to_use) as src:
-                    dem_array_for_factors = src.read(1)
-                    dem_nodata = src.nodata
-            except Exception:
-                dem_array_for_factors = None
-
+            
             tasks: List[Tuple[float, float, str, Dict[str, float | int | str | None]]] = []
             for idx, point in enumerate(sampled_points):
                 lat = point.get("lat") if isinstance(point, dict) else None
@@ -78,7 +75,7 @@ def perform_viewshed_analysis(
                 raise ValueError("DEM array missing or invalid.")
 
             worker_count = max_workers or min(os.cpu_count() or 1, len(tasks))
-            print(f"Viewshed tasks: {len(tasks)}, workers: {worker_count}", flush=True)
+            logger.debug(f"Viewshed tasks: {len(tasks)}, workers: {worker_count}", flush=True)
 
             def _process_task(
                 easting: float,
@@ -211,7 +208,7 @@ def _write_dem_geotiff(path: str, array: np.ndarray, transform, crs) -> None:
 
 
 def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northing: float) -> None:
-    #print(f"Running viewshed at {easting},{northing}", flush=True)
+    #logger.debug(f"Running viewshed at {easting},{northing}", flush=True)
     src_ds = gdal.Open(dem_path, gdal.GA_ReadOnly)
     if src_ds is None:
         raise RuntimeError(f"Failed to open DEM for viewshed: {dem_path}")
@@ -234,10 +231,10 @@ def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northi
         0.0,
         0.85714,
         gdal.GVM_Edge,
-        25000.0,
+        float(RANGE_KM) * 1000.0,
     )
     src_ds = None
-    #print("Finished viewshed", flush=True)
+    #logger.debug("Finished viewshed", flush=True)
 
 
 def _tangent_vector_for_sample(
@@ -350,7 +347,7 @@ def _split_viewshed_by_tangent(
                     resampling=Resampling.bilinear
                 )
         except Exception as e:
-            print(f"Warning: Could not read DEM for elevation factors: {e}", flush=True)
+            logger.debug(f"Warning: Could not read DEM for elevation factors: {e}", flush=True)
 
     if nodata is None or (isinstance(nodata, (int, float)) and nodata == 0):
         total_mask = np.ones_like(data, dtype=bool)

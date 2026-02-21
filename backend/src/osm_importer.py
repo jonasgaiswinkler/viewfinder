@@ -2,11 +2,13 @@ import os
 import platform
 import tempfile
 import subprocess
+import time
 from typing import Dict, Tuple
 import requests
 import xml.etree.ElementTree as ET
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way_type: str) -> None:
     """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info."""
@@ -28,16 +30,48 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     out body;
     """
     
-    print("download_ways: Downloading ways with query:", overpass_query)
-    response = requests.get(overpass_url, params={'data': overpass_query})
-    print("download_ways: Overpass API response status code:", response.status_code)
-    response.raise_for_status()  # Raise an error for bad responses
+    logger.debug(f"import_ways: Downloading ways with query: {overpass_query}")
+    max_retries = 5
+    delay_seconds = 3
+    response = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(overpass_url, params={'data': overpass_query})
+        except requests.RequestException as exc:
+            logger.warning(
+                f"import_ways: Overpass request failed on attempt {attempt}/{max_retries}: {exc}"
+            )
+            if attempt == max_retries:
+                raise
+            time.sleep(delay_seconds)
+            continue
+
+        logger.debug(
+            f"import_ways: Overpass API response status code: {response.status_code} (attempt {attempt}/{max_retries})"
+        )
+
+        if response.status_code == 504:
+            logger.warning(
+                f"import_ways: Overpass API returned 504 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+            )
+            if attempt == max_retries:
+                response.raise_for_status()
+            time.sleep(delay_seconds)
+            continue
+
+        # Successful (non-504) response; break out of retry loop
+        break
+
+    if response is None:
+        raise RuntimeError("import_ways: Failed to get a response from Overpass API")
+
+    response.raise_for_status()  # Raise an error for other bad responses
     
     # Write XML to temp file for osm2pgrouting
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
     tmp.write(response.text)
     tmp.close()
-    print(f"download_ways: Saved OSM XML to {tmp.name}")
+    logger.debug(f"import_ways: Saved OSM XML to {tmp.name}")
 
     await _cleanup_bounding_box(session, bounding_box)
 
@@ -61,6 +95,8 @@ async def _cleanup_bounding_box(
         "max_lat": bounding_box["max_lat"],
     }
 
+    logger.debug(f"cleanup_bounding_box: Cleaning up area {bounding_box}")
+
     # Check if pgRouting tables exist yet
     ways_exists = await session.execute(text("""
         SELECT EXISTS (
@@ -69,19 +105,22 @@ async def _cleanup_bounding_box(
         )
     """))
     if not ways_exists.scalar():
-        print("cleanup_bounding_box: ways table does not exist yet, skipping cleanup")
+        logger.debug("cleanup_bounding_box: ways table does not exist yet, skipping cleanup")
         return
 
-    # 1. Delete scenicness data for edges in the bounding box
-    await session.execute(text("""
-        DELETE FROM scenicness_point_factor_values
-        WHERE point_id IN (
-            SELECT sp.id FROM scenicness_points sp
-            JOIN ways w ON w.gid = sp.edge_id
-            WHERE w.the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
-        )
+    # 1. Collect vertex IDs that could become orphaned (before deleting ways)
+    result = await session.execute(text("""
+        SELECT DISTINCT v_id FROM (
+            SELECT source AS v_id FROM ways
+            WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+            UNION
+            SELECT target AS v_id FROM ways
+            WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+        ) sub
     """), params)
+    affected_vertex_ids = [row[0] for row in result.fetchall()]
 
+    # 2. Delete scenicness data for edges in the bounding box
     await session.execute(text("""
         DELETE FROM scenicness_points
         WHERE edge_id IN (
@@ -90,24 +129,44 @@ async def _cleanup_bounding_box(
         )
     """), params)
 
-    # 2. Delete edges in the bounding box
+    # 3. Delete edges in the bounding box
     await session.execute(text("""
         DELETE FROM ways
         WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
     """), params)
 
-    # 3. Remove orphaned vertices (vertices with no remaining edges)
-    await session.execute(text("""
-        DELETE FROM ways_vertices_pgr
-        WHERE id NOT IN (
-            SELECT source FROM ways
-            UNION
-            SELECT target FROM ways
-        )
-    """))
+    # 4. Remove orphaned vertices — only check the ones we know were affected
+    logger.debug(f"cleanup_bounding_box: ways_vertices_pgr ({len(affected_vertex_ids)} candidates)")
+    if affected_vertex_ids:
+        # Find which candidates are still referenced by remaining ways
+        still_referenced = await session.execute(text("""
+            SELECT DISTINCT v_id FROM (
+                SELECT source AS v_id FROM ways WHERE source = ANY(:vertex_ids)
+                UNION
+                SELECT target AS v_id FROM ways WHERE target = ANY(:vertex_ids)
+            ) sub
+        """), {"vertex_ids": affected_vertex_ids})
+        still_referenced_ids = {row[0] for row in still_referenced.fetchall()}
+
+        # Orphans = candidates that are no longer referenced
+        orphan_ids = [v for v in affected_vertex_ids if v not in still_referenced_ids]
+        logger.debug(f"cleanup_bounding_box: deleting {len(orphan_ids)} orphaned vertices")
+
+        if orphan_ids:
+            # Disable FK triggers to avoid per-row constraint checks (the main bottleneck)
+            await session.execute(text(
+                "ALTER TABLE ways_vertices_pgr DISABLE TRIGGER ALL"
+            ))
+            await session.execute(text(
+                "DELETE FROM ways_vertices_pgr WHERE id = ANY(:orphan_ids)"
+            ), {"orphan_ids": orphan_ids})
+            await session.execute(text(
+                "ALTER TABLE ways_vertices_pgr ENABLE TRIGGER ALL"
+            ))
+            logger.debug(f"cleanup_bounding_box: deleted {len(orphan_ids)} orphaned vertices")
 
     await session.commit()
-    print(f"cleanup_bounding_box: Cleaned up area {bounding_box}")
+    logger.debug(f"cleanup_bounding_box: Cleaned up area {bounding_box}")
 
 def _parse_tunnel_bridge_from_osm(osm_path: str) -> Dict[int, Tuple[bool, bool]]:
     """Parse .osm XML and return {osm_way_id: (is_tunnel, is_bridge)} for each way."""
@@ -173,7 +232,7 @@ async def _update_tunnel_bridge(
         count += result.rowcount  # type: ignore[union-attr]
 
     await session.commit()
-    print(f"update_tunnel_bridge: Updated {count} ways")
+    logger.debug(f"update_tunnel_bridge: Updated {count} ways")
     return count
 
 async def _import_with_pgrouting(
@@ -222,13 +281,13 @@ async def _import_with_pgrouting(
     if clean:
         cmd.append("--clean")
 
-    print(f"import_with_pgrouting: Running {' '.join(cmd)}")
+    logger.debug(f"import_with_pgrouting: Running osm2pgrouting")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"osm2pgrouting failed (code {result.returncode}):\n{result.stderr}"
         )
-    print(f"import_with_pgrouting: Success\n{result.stdout}")
+    logger.debug(f"import_with_pgrouting: Success run osm2pgrouting")
 
     await _update_tunnel_bridge(session, osm_path)
     # Clean up temp file

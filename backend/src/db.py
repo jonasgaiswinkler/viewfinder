@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+from loguru import logger
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
@@ -12,7 +13,7 @@ POSTGRES_DB = os.getenv("POSTGRES_DB")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT")
 
-print(f"Connecting to database at {POSTGRES_HOST}:{POSTGRES_PORT}, DB: {POSTGRES_DB}, User: {POSTGRES_USER}")
+logger.info(f"Connecting to database at {POSTGRES_HOST}:{POSTGRES_PORT}, DB: {POSTGRES_DB}, User: {POSTGRES_USER}")
 
 # Replace with your PostgreSQL connection string
 # The 'postgresql+asyncpg' prefix tells SQLAlchemy to use asyncpg

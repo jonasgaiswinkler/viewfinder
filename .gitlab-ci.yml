@@ -33,14 +33,14 @@ variables:
 before_script:
   - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
 
-# build-backend:
-#   stage: build
-#   tags:
-#     - docker
-#   rules:
-#     - !reference [.rule_backend, rules]
-#   script:
-#     - docker build --pull -t $REGISTRY_GROUP_PROJECT/backend ./backend
+build-backend:
+  stage: build
+  tags:
+    - docker
+  rules:
+    - !reference [.rule_backend, rules]
+  script:
+    - docker build --pull -t $REGISTRY_GROUP_PROJECT/backend ./backend
 
 build-frontend:
   stage: build
@@ -51,14 +51,14 @@ build-frontend:
   script:
     - docker build --pull -t $REGISTRY_GROUP_PROJECT/frontend ./frontend
 
-# push-backend:
-#   stage: push
-#   tags:
-#     - docker
-#   rules:
-#     - !reference [.rule_backend, rules]
-#   script:
-#     - docker push $REGISTRY_GROUP_PROJECT/backend
+push-backend:
+  stage: push
+  tags:
+    - docker
+  rules:
+    - !reference [.rule_backend, rules]
+  script:
+    - docker push $REGISTRY_GROUP_PROJECT/backend
 
 push-frontend:
   stage: push

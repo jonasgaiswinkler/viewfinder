@@ -13,3 +13,5 @@ pystac-client
 python-dotenv
 sqlalchemy[asyncio]
 asyncpg
+loguru
+uvicorn[standard]
