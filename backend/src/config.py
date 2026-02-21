@@ -33,3 +33,15 @@ def _get_sampling_spacing_m() -> float:
 # Public constant for sample spacing (meters). Can be set via
 # environment variable `VIEWFINDER_SAMPLING_SPACING_M` (default: 200)
 SAMPLING_SPACING_M = _get_sampling_spacing_m()
+
+
+def _get_tile_size_km() -> float:
+    val = os.getenv("VIEWFINDER_TILE_SIZE_KM", "75")
+    try:
+        return float(val)
+    except Exception:
+        return 75.0
+
+# Public constant for bounding-box tile size (km). Can be set via
+# environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 75)
+TILE_SIZE_KM = _get_tile_size_km()

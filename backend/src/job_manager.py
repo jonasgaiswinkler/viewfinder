@@ -30,6 +30,8 @@ class JobInfo(BaseModel):
     id: str
     status: JobStatus
     current_step: Optional[JobStep] = None
+    current_tile: Optional[int] = None
+    total_tiles: Optional[int] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -122,37 +124,60 @@ class JobManager:
         from way_sampler import sample_points_along_ways
         from dem_retriever import retrieve_dem
         from viewshed_analyzer import perform_viewshed_analysis
-        from scenicness_saver import save_viewshed_results_to_db
+        from scenicness_saver import save_viewshed_results_to_db, refresh_scenicness_segments
+        from utils import split_bounding_box
+
+        from config import TILE_SIZE_KM
 
         bounding_box = job.params["bounding_box"]
         way_type = job.params["way_type"]
 
+        tiles = split_bounding_box(bounding_box, TILE_SIZE_KM)
+        total_tiles = len(tiles)
+        job.total_tiles = total_tiles
+        logger.info(f"Job {job.id}: bounding box split into {total_tiles} tile(s) ({TILE_SIZE_KM} km)")
+
+        total_viewshed_points = 0
+
         async with AsyncSessionLocal() as session:
-            # Step 1 – Import ways from OSM
-            self.update_step(job.id, JobStep.importing_ways)
-            await import_ways(session, bounding_box, way_type)
+            for tile_idx, tile_bbox in enumerate(tiles, start=1):
+                job.current_tile = tile_idx
+                logger.info(f"Job {job.id}: processing tile {tile_idx}/{total_tiles}")
 
-            # Step 2 – Sample points along imported ways
-            self.update_step(job.id, JobStep.sampling_points)
-            sampled_points = await sample_points_along_ways(
-                session=session, bounding_box=bounding_box
-            )
+                # Step 1 – Import ways from OSM
+                self.update_step(job.id, JobStep.importing_ways)
+                await import_ways(session, tile_bbox, way_type)
 
-            # Step 3 – Retrieve DEM data (CPU-bound → run in thread)
-            self.update_step(job.id, JobStep.retrieving_dem)
-            dem_data = await asyncio.to_thread(retrieve_dem, bounding_box, True)
+                # Step 2 – Sample points along imported ways
+                self.update_step(job.id, JobStep.sampling_points)
+                sampled_points = await sample_points_along_ways(
+                    session=session, bounding_box=tile_bbox
+                )
 
-            # Step 4 – Perform viewshed analysis (CPU-bound → run in thread)
-            self.update_step(job.id, JobStep.performing_viewshed)
-            viewshed_results = await asyncio.to_thread(
-                perform_viewshed_analysis, dem_data, sampled_points
-            )
+                # Step 3 – Retrieve DEM data (CPU-bound → run in thread)
+                self.update_step(job.id, JobStep.retrieving_dem)
+                dem_data = await asyncio.to_thread(retrieve_dem, tile_bbox, True)
 
-            # Step 5 – Save results to DB
-            self.update_step(job.id, JobStep.saving_results)
-            await save_viewshed_results_to_db(viewshed_results, session=session)
+                # Step 4 – Perform viewshed analysis (CPU-bound → run in thread)
+                self.update_step(job.id, JobStep.performing_viewshed)
+                viewshed_results = await asyncio.to_thread(
+                    perform_viewshed_analysis, dem_data, sampled_points
+                )
 
-        job.result = {"num_viewshed_points": len(viewshed_results)}
+                # Step 5 – Save results to DB (skip segment refresh until all tiles done)
+                self.update_step(job.id, JobStep.saving_results)
+                await save_viewshed_results_to_db(
+                    viewshed_results, session=session, refresh_segments=False
+                )
+
+                total_viewshed_points += len(viewshed_results)
+                logger.info(f"Job {job.id}: tile {tile_idx}/{total_tiles} done ({len(viewshed_results)} points)")
+
+            # Final refresh of scenicness_segments after all tiles are processed
+            logger.info(f"Job {job.id}: refreshing scenicness segments")
+            await refresh_scenicness_segments(session)
+
+        job.result = {"num_viewshed_points": total_viewshed_points, "num_tiles": total_tiles}
 
 
 # Singleton instance used by the application

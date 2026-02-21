@@ -1,12 +1,34 @@
+import os
+import secrets
 from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import Depends, FastAPI, HTTPException, APIRouter
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, model_validator
 
 from job_manager import job_manager, JobInfo
+
+# ---------------------------------------------------------------------------
+# Basic-auth dependency (credentials from env vars)
+# ---------------------------------------------------------------------------
+
+AUTH_USERNAME = os.getenv("VIEWFINDER_AUTH_USERNAME", "")
+AUTH_PASSWORD = os.getenv("VIEWFINDER_AUTH_PASSWORD", "")
+
+security = HTTPBasic()
+
+
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    if not AUTH_USERNAME or not AUTH_PASSWORD:
+        raise HTTPException(status_code=500, detail="Auth credentials not configured on server")
+    username_ok = secrets.compare_digest(credentials.username.encode(), AUTH_USERNAME.encode())
+    password_ok = secrets.compare_digest(credentials.password.encode(), AUTH_PASSWORD.encode())
+    if not (username_ok and password_ok):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return credentials.username
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +49,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(verify_credentials)])
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +61,6 @@ class BoundingBox(BaseModel):
     min_lon: float
     max_lat: float
     max_lon: float
-
-    @model_validator(mode='after')
-    def validate_bbox(self):
-        if abs(self.max_lat - self.min_lat) > 1:
-            raise ValueError('Latitude range must be at most 1 degree')
-        if abs(self.max_lon - self.min_lon) > 1:
-            raise ValueError('Longitude range must be at most 1 degree')
-        return self
 
 
 class WayType(str, Enum):

@@ -23,6 +23,7 @@ def _to_float(value: Any) -> Optional[float]:
 async def save_viewshed_results_to_db(
     viewshed_results: Iterable[Dict[str, Any]],
     session: AsyncSession,
+    refresh_segments: bool = True,
 ) -> int:
     rows: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for result in viewshed_results:
@@ -128,10 +129,15 @@ async def save_viewshed_results_to_db(
 
     await session.commit()
 
-    # Refresh the scenicness_segments table
-    logger.debug("Refreshing scenicness_segments table")
-    await session.execute(text("SELECT refresh_scenicness_segments()"))
-    await session.commit()
+    if refresh_segments:
+        await refresh_scenicness_segments(session)
 
     logger.debug(f"Inserted {len(rows)} scenicness points")
     return len(rows)
+
+
+async def refresh_scenicness_segments(session: AsyncSession) -> None:
+    """Refresh the materialised scenicness_segments table."""
+    logger.debug("Refreshing scenicness_segments table")
+    await session.execute(text("SELECT refresh_scenicness_segments()"))
+    await session.commit()
