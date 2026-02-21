@@ -1,24 +1,38 @@
+from contextlib import asynccontextmanager
 from enum import Enum
-from typing import Any, Dict, Iterable, List
-from loguru import logger
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, APIRouter, Depends
+from loguru import logger
+from fastapi import FastAPI, HTTPException, APIRouter
 from pydantic import BaseModel, model_validator
-from osm_importer import import_ways
-from way_sampler import sample_points_along_ways
-from dem_retriever import retrieve_dem
-from viewshed_analyzer import perform_viewshed_analysis
-from db import get_db
-from scenicness_saver import save_viewshed_results_to_db
+
+from job_manager import job_manager, JobInfo
+
+
+# ---------------------------------------------------------------------------
+# Lifespan – start / stop the background job worker
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    job_manager.start()
+    yield
+
 
 app = FastAPI(
     title="ViewFinder",
     summary="A service that can estimate the best side to sit on, given any route, so you get the best views.",
     docs_url="/api/docs",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 router = APIRouter(prefix="/api")
+
+
+# ---------------------------------------------------------------------------
+# Request / response models
+# ---------------------------------------------------------------------------
 
 class BoundingBox(BaseModel):
     min_lat: float
@@ -34,6 +48,7 @@ class BoundingBox(BaseModel):
             raise ValueError('Longitude range must be at most 1 degree')
         return self
 
+
 class WayType(str, Enum):
     railway = "railway"
     road = "road"
@@ -44,31 +59,36 @@ class ComputeScenicnessRequest(BaseModel):
     bounding_box: BoundingBox = BoundingBox(min_lat=46.215, min_lon=9.368, max_lat=46.888, max_lon=10.335)
     way_type: WayType = WayType.railway
 
-@router.post("/compute-scenicness/")
-async def compute_scenicness(
-    request: ComputeScenicnessRequest,
-    session=Depends(get_db),
-):
-    try:
-        logger.info(f"Received request to compute scenicness for bounding box: {request.bounding_box} and way type: {request.way_type}")
-        bounding_box = request.bounding_box.model_dump()
-        way_type = request.way_type
 
-        await import_ways(session, bounding_box, way_type.value)
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
-        sampled_points = await sample_points_along_ways(session=session, bounding_box=bounding_box)
+@router.post("/jobs/", response_model=JobInfo, status_code=202)
+async def create_job(request: ComputeScenicnessRequest):
+    """Create a new scenicness computation job. Returns immediately with the job info."""
+    job = job_manager.create_job(
+        params={
+            "bounding_box": request.bounding_box.model_dump(),
+            "way_type": request.way_type.value,
+        }
+    )
+    return job
 
-        dem_data = retrieve_dem(bounding_box, write_geotiff=True)
-        viewshed_results = perform_viewshed_analysis(dem_data, sampled_points)
-        await save_viewshed_results_to_db(
-            viewshed_results,
-            session=session,
-        )
-        
-        logger.info(f"Scenicness computation completed successfully for bounding box: {request.bounding_box} and way type: {request.way_type}")
-        return {"status": "success", "num_viewshed_points": len(viewshed_results)}
-    except Exception as e:
-        logger.error(f"Error occurred while computing scenicness: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/jobs/", response_model=List[JobInfo])
+async def list_jobs():
+    """Return all jobs (queued, running, completed, failed)."""
+    return job_manager.list_jobs()
+
+
+@router.get("/jobs/{job_id}", response_model=JobInfo)
+async def get_job(job_id: str):
+    """Return the status and details of a single job."""
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
 
 app.include_router(router)
