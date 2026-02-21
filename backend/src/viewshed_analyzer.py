@@ -19,6 +19,7 @@ try:
 except Exception:
     pass
 from loguru import logger
+from config import RANGE_KM
 
 from factor_calculators.visible_area import visible_area_factors_from_split
 from factor_calculators.elevation import elevation_factors_from_split
@@ -230,7 +231,7 @@ def _run_viewshed_task_gdal(dem_path: str, out_path: str, easting: float, northi
         0.0,
         0.85714,
         gdal.GVM_Edge,
-        25000.0,
+        float(RANGE_KM) * 1000.0,
     )
     src_ds = None
     #logger.debug("Finished viewshed", flush=True)

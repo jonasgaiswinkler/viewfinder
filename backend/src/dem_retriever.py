@@ -10,6 +10,7 @@ import tempfile
 from loguru import logger
 import numpy as np
 from rasterio.transform import array_bounds
+from config import RANGE_KM
 
 
 COPERNICUS_DEM_90M_BUCKET = "https://copernicus-dem-90m.s3.amazonaws.com"
@@ -47,7 +48,7 @@ def retrieve_dem(bounding_box: Dict[str, float], write_geotiff: bool = False) ->
     max_lat = bounding_box["max_lat"]
     max_lon = bounding_box["max_lon"]
 
-    range_km = 25.0
+    range_km = RANGE_KM
     km_per_degree_lat = 111.32
     center_lat = (min_lat + max_lat) / 2.0
     km_per_degree_lon = max(0.000001, km_per_degree_lat * math.cos(math.radians(center_lat)))

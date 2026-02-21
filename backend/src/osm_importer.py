@@ -2,6 +2,7 @@ import os
 import platform
 import tempfile
 import subprocess
+import time
 from typing import Dict, Tuple
 import requests
 import xml.etree.ElementTree as ET
@@ -30,9 +31,41 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     """
     
     logger.debug(f"import_ways: Downloading ways with query: {overpass_query}")
-    response = requests.get(overpass_url, params={'data': overpass_query})
-    logger.debug(f"import_ways: Overpass API response status code: {response.status_code}")
-    response.raise_for_status()  # Raise an error for bad responses
+    max_retries = 5
+    delay_seconds = 3
+    response = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(overpass_url, params={'data': overpass_query})
+        except requests.RequestException as exc:
+            logger.warning(
+                f"import_ways: Overpass request failed on attempt {attempt}/{max_retries}: {exc}"
+            )
+            if attempt == max_retries:
+                raise
+            time.sleep(delay_seconds)
+            continue
+
+        logger.debug(
+            f"import_ways: Overpass API response status code: {response.status_code} (attempt {attempt}/{max_retries})"
+        )
+
+        if response.status_code == 504:
+            logger.warning(
+                f"import_ways: Overpass API returned 504 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+            )
+            if attempt == max_retries:
+                response.raise_for_status()
+            time.sleep(delay_seconds)
+            continue
+
+        # Successful (non-504) response; break out of retry loop
+        break
+
+    if response is None:
+        raise RuntimeError("import_ways: Failed to get a response from Overpass API")
+
+    response.raise_for_status()  # Raise an error for other bad responses
     
     # Write XML to temp file for osm2pgrouting
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
@@ -76,7 +109,6 @@ async def _cleanup_bounding_box(
         return
 
     # 1. Collect vertex IDs that could become orphaned (before deleting ways)
-    logger.debug(f"cleanup_bounding_box: collecting affected vertex IDs")
     result = await session.execute(text("""
         SELECT DISTINCT v_id FROM (
             SELECT source AS v_id FROM ways
@@ -89,7 +121,6 @@ async def _cleanup_bounding_box(
     affected_vertex_ids = [row[0] for row in result.fetchall()]
 
     # 2. Delete scenicness data for edges in the bounding box
-    logger.debug(f"cleanup_bounding_box: scenicness_points")
     await session.execute(text("""
         DELETE FROM scenicness_points
         WHERE edge_id IN (
@@ -99,7 +130,6 @@ async def _cleanup_bounding_box(
     """), params)
 
     # 3. Delete edges in the bounding box
-    logger.debug(f"cleanup_bounding_box: ways")
     await session.execute(text("""
         DELETE FROM ways
         WHERE the_geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
@@ -134,8 +164,6 @@ async def _cleanup_bounding_box(
                 "ALTER TABLE ways_vertices_pgr ENABLE TRIGGER ALL"
             ))
             logger.debug(f"cleanup_bounding_box: deleted {len(orphan_ids)} orphaned vertices")
-
-    logger.debug(f"cleanup_bounding_box: precommit")
 
     await session.commit()
     logger.debug(f"cleanup_bounding_box: Cleaned up area {bounding_box}")

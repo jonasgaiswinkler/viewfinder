@@ -20,35 +20,6 @@ app = FastAPI(
 
 router = APIRouter(prefix="/api")
 
-
-def _viewshed_results_to_geojson(
-    results: Iterable[Dict[str, Any]],
-) -> Dict[str, Any]:
-    features: List[Dict[str, Any]] = []
-    for item in results:
-        if not isinstance(item, dict):
-            continue
-        lat = item.get("lat")
-        lon = item.get("lon")
-        if lat is None or lon is None:
-            continue
-        properties = {k: v for k, v in item.items() if k not in {"lat", "lon"}}
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [float(lon), float(lat)],
-                },
-                "properties": properties,
-            }
-        )
-
-    return {
-        "type": "FeatureCollection",
-        "features": features,
-    }
-
 class BoundingBox(BaseModel):
     min_lat: float
     min_lon: float
@@ -93,7 +64,7 @@ async def compute_scenicness(
             viewshed_results,
             session=session,
         )
-        #return _viewshed_results_to_geojson(viewshed_results)
+        
         logger.info(f"Scenicness computation completed successfully for bounding box: {request.bounding_box} and way type: {request.way_type}")
         return {"status": "success", "num_viewshed_points": len(viewshed_results)}
     except Exception as e:
