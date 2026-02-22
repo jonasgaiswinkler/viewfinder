@@ -148,7 +148,7 @@ class JobManager:
                 self.update_step(job.id, JobStep.importing_ways)
                 await import_ways(session, tile_bbox, way_type)
 
-                # Step 2 – Sample points along imported ways
+                # Step 2 – Sample points along ways
                 self.update_step(job.id, JobStep.sampling_points)
                 sampled_points = await sample_points_along_ways(
                     session=session, bounding_box=tile_bbox
