@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from config import OVERPASS_MAX_RETRIES, OVERPASS_REQUEST_DELAY
+from config import OVERPASS_MAX_RETRIES, OVERPASS_REQUEST_DELAY, OVERPASS_TIMEOUT
 
 async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way_type: str) -> None:
     """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info."""
@@ -26,7 +26,7 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
 
     overpass_url = "https://overpass.private.coffee/api/interpreter"
     overpass_query = f"""
-    [out:xml][timeout:25];
+    [out:xml][timeout:{OVERPASS_TIMEOUT}];
     way{way_selector}({min_lat},{min_lon},{max_lat},{max_lon});
     (._;>;);
     out body;

@@ -2,7 +2,7 @@ import math
 from typing import List, Dict, Any
 
 
-def split_bounding_box(bounding_box: Dict[str, float], tile_size_km: float = 75.0) -> List[Dict[str, float]]:
+def split_bounding_box(bounding_box: Dict[str, float], tile_size_km: float = 60.0) -> List[Dict[str, float]]:
     """Split a bounding box into smaller tiles of approximately *tile_size_km* × *tile_size_km*.
 
     Returns a list of bounding-box dicts with the same keys as the input.

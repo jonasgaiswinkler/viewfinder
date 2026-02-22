@@ -36,14 +36,14 @@ SAMPLING_SPACING_M = _get_sampling_spacing_m()
 
 
 def _get_tile_size_km() -> float:
-    val = os.getenv("VIEWFINDER_TILE_SIZE_KM", "75")
+    val = os.getenv("VIEWFINDER_TILE_SIZE_KM", "60")
     try:
         return float(val)
     except Exception:
-        return 75.0
+        return 60.0
 
 # Public constant for bounding-box tile size (km). Can be set via
-# environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 75)
+# environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 60)
 TILE_SIZE_KM = _get_tile_size_km()
 
 def _get_overpass_max_retries() -> int:
@@ -67,3 +67,14 @@ def _get_overpass_request_delay() -> int:
 # Public constant for Overpass API request delay. Can be set via
 # environment variable `VIEWFINDER_OVERPASS_REQUEST_DELAY` (default: 15)
 OVERPASS_REQUEST_DELAY = _get_overpass_request_delay()
+
+def _get_overpass_timeout() -> int:
+    val = os.getenv("VIEWFINDER_OVERPASS_TIMEOUT", "60")
+    try:
+        return int(val)
+    except Exception:
+        return 60
+
+# Public constant for Overpass API timeout. Can be set via
+# environment variable `VIEWFINDER_OVERPASS_TIMEOUT` (default: 60)
+OVERPASS_TIMEOUT = _get_overpass_timeout()
