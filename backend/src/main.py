@@ -11,10 +11,13 @@ from loguru import logger
 logger.remove()
 logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO").upper())
 from fastapi import Depends, FastAPI, HTTPException, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
+from db import AsyncSessionLocal
 from job_manager import job_manager, JobInfo
+from route_solver import compute_scenic_route
 
 # ---------------------------------------------------------------------------
 # Basic-auth dependency (credentials from env vars)
@@ -54,7 +57,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 router = APIRouter(prefix="/api", dependencies=[Depends(verify_credentials)])
+public_router = APIRouter(prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +89,10 @@ class WayType(str, Enum):
 class ComputeScenicnessRequest(BaseModel):
     bounding_box: BoundingBox = BoundingBox(min_lat=46.215, min_lon=9.368, max_lat=46.888, max_lon=10.335)
     way_type: WayType = WayType.railway
+
+
+class RouteRequest(BaseModel):
+    coordinates: List[List[float]]  # [[lon, lat], ...]
 
 
 # ---------------------------------------------------------------------------
@@ -110,4 +126,27 @@ async def get_job(job_id: str):
     return job
 
 
+@public_router.post("/route")
+async def route(request: RouteRequest):
+    """Compute a scenic route through the given waypoints.
+
+    Accepts an array of ``[lon, lat]`` coordinates, routes between them on
+    the ways network using pgRouting, and returns a GeoJSON FeatureCollection
+    with direction-corrected scenicness segments.
+    """
+    if len(request.coordinates) < 2:
+        raise HTTPException(status_code=400, detail="At least two coordinates are required")
+    for i, coord in enumerate(request.coordinates):
+        if not isinstance(coord, list) or len(coord) != 2:
+            raise HTTPException(status_code=400, detail=f"Coordinate at index {i} must be [lon, lat]")
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await compute_scenic_route(session, request.coordinates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
 app.include_router(router)
+app.include_router(public_router)
