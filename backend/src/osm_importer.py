@@ -24,7 +24,7 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     else:
         way_selector = '["railway"~"^(rail|narrow_gauge)$"]["service"!~"^(yard|siding|spur|crossover)$"]'
 
-    overpass_url = "http://overpass-api.de/api/interpreter"
+    overpass_url = "https://overpass.private.coffee/api/interpreter"
     overpass_query = f"""
     [out:xml][timeout:25];
     way{way_selector}({min_lat},{min_lon},{max_lat},{max_lon});
@@ -38,7 +38,15 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     response = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(overpass_url, params={'data': overpass_query})
+            # Use POST and send the Overpass query as form-encoded data
+            response = requests.post(
+                overpass_url,
+                data={"data": overpass_query},
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "ViewFinder (kontakt@jonasgaiswinkler.eu)",
+                },
+            )
         except requests.RequestException as exc:
             logger.warning(
                 f"import_ways: Overpass request failed on attempt {attempt}/{max_retries}: {exc}"
@@ -61,7 +69,16 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
             time.sleep(delay_seconds)
             continue
 
-        # Successful (non-504) response; break out of retry loop
+        if response.status_code == 429:
+            logger.warning(
+                f"import_ways: Overpass API returned 429 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+            )
+            if attempt == max_retries:
+                response.raise_for_status()
+            time.sleep(delay_seconds)
+            continue
+
+        # Successful (non-504/429) response; break out of retry loop
         break
 
     if response is None:
