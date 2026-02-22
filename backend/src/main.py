@@ -11,6 +11,7 @@ from loguru import logger
 logger.remove()
 logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO").upper())
 from fastapi import Depends, FastAPI, HTTPException, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
@@ -54,6 +55,14 @@ app = FastAPI(
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 router = APIRouter(prefix="/api", dependencies=[Depends(verify_credentials)])
