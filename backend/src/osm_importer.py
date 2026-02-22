@@ -78,7 +78,33 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
             time.sleep(delay_seconds)
             continue
 
-        # Successful (non-504/429) response; break out of retry loop
+        # Some successful 200 responses may still indicate a query timeout
+        # (Overpass returns XML with a <remark> element). Detect that and
+        # treat it as a transient error so we retry like on 504/429.
+        if response.status_code == 200:
+            try:
+                root = ET.fromstring(response.text)
+                remark = root.find("remark")
+                if remark is not None and remark.text:
+                    remark_text = remark.text.strip().lower()
+                    if (
+                        "timed out" in remark_text
+                        or "timeout" in remark_text
+                        or "query timed out" in remark_text
+                        or "runtime error" in remark_text
+                    ):
+                        logger.warning(
+                            f"import_ways: Overpass API returned remark indicating timeout on attempt {attempt}/{max_retries}: {remark_text!r}, retrying in {delay_seconds}s"
+                        )
+                        if attempt == max_retries:
+                            raise RuntimeError(f"Overpass returned timeout remark: {remark_text}")
+                        time.sleep(delay_seconds)
+                        continue
+            except ET.ParseError:
+                # Non-XML body or parse error — ignore and treat as success/break
+                pass
+
+        # Successful (non-504/429 and not an XML timeout remark) response; break
         break
 
     if response is None:
