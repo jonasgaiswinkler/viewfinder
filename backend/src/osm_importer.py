@@ -10,6 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
+from config import OVERPASS_MAX_RETRIES, OVERPASS_REQUEST_DELAY
+
 async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way_type: str) -> None:
     """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info."""
     min_lat = bounding_box['min_lat']
@@ -31,8 +33,8 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     """
     
     logger.debug(f"import_ways: Downloading ways with query: {overpass_query}")
-    max_retries = 5
-    delay_seconds = 3
+    max_retries = OVERPASS_MAX_RETRIES
+    delay_seconds = OVERPASS_REQUEST_DELAY
     response = None
     for attempt in range(1, max_retries + 1):
         try:

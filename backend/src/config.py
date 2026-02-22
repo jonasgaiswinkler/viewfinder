@@ -45,3 +45,25 @@ def _get_tile_size_km() -> float:
 # Public constant for bounding-box tile size (km). Can be set via
 # environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 75)
 TILE_SIZE_KM = _get_tile_size_km()
+
+def _get_overpass_max_retries() -> int:
+    val = os.getenv("VIEWFINDER_OVERPASS_MAX_RETRIES", "5")
+    try:
+        return int(val)
+    except Exception:
+        return 5
+
+# Public constant for Overpass API max retries. Can be set via
+# environment variable `VIEWFINDER_OVERPASS_MAX_RETRIES` (default: 5)
+OVERPASS_MAX_RETRIES = _get_overpass_max_retries()
+
+def _get_overpass_request_delay() -> int:
+    val = os.getenv("VIEWFINDER_OVERPASS_REQUEST_DELAY", "15")
+    try:
+        return int(val)
+    except Exception:
+        return 15
+
+# Public constant for Overpass API request delay. Can be set via
+# environment variable `VIEWFINDER_OVERPASS_REQUEST_DELAY` (default: 15)
+OVERPASS_REQUEST_DELAY = _get_overpass_request_delay()
