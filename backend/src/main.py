@@ -3,11 +3,16 @@ import secrets
 from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Any, Dict, List, Optional
+import sys
 
 from loguru import logger
+# Configure loguru from the environment variable LOG_LEVEL (default: INFO).
+# This makes the `LOG_LEVEL` env var used by loguru in production.
+logger.remove()
+logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO").upper())
 from fastapi import Depends, FastAPI, HTTPException, APIRouter
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 from job_manager import job_manager, JobInfo
 
