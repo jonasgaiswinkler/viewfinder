@@ -79,11 +79,26 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
             continue
 
         # Some successful 200 responses may still indicate a query timeout
-        # (Overpass returns XML with a <remark> element). Detect that and
+        # (Overpass returns XML with a <remark> element or XHTML error page). Detect that and
         # treat it as a transient error so we retry like on 504/429.
         if response.status_code == 200:
             try:
                 root = ET.fromstring(response.text)
+                
+                # Check for XHTML error page (runtime error, dispatcher error, etc.)
+                # XHTML is valid XML, so it parses successfully but has <html> root
+                if root.tag == "{http://www.w3.org/1999/xhtml}html" or root.tag == "html":
+                    response_lower = response.text.lower()
+                    if "runtime error" in response_lower or "dispatcher_client" in response_lower:
+                        logger.warning(
+                            f"import_ways: Overpass API returned XHTML error on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                        )
+                        if attempt == max_retries:
+                            raise RuntimeError(f"Overpass returned XHTML error: {response.text[:500]}")
+                        time.sleep(delay_seconds)
+                        continue
+                
+                # Check for OSM XML with <remark> indicating timeout
                 remark = root.find("remark")
                 if remark is not None and remark.text:
                     remark_text = remark.text.strip().lower()
@@ -101,8 +116,14 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
                         time.sleep(delay_seconds)
                         continue
             except ET.ParseError:
-                # Non-XML body or parse error — ignore and treat as success/break
-                pass
+                # Non-XML body — treat as transient error and retry
+                logger.warning(
+                    f"import_ways: Overpass API returned non-XML response on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                )
+                if attempt == max_retries:
+                    raise RuntimeError(f"Overpass returned non-XML response: {response.text[:500]}")
+                time.sleep(delay_seconds)
+                continue
 
         # Successful (non-504/429 and not an XML timeout remark) response; break
         break
@@ -111,8 +132,6 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
         raise RuntimeError("import_ways: Failed to get a response from Overpass API")
 
     response.raise_for_status()  # Raise an error for other bad responses
-
-    logger.debug(f"import_ways: Successfully downloaded OSM data from Overpass API: {response.text}")
     
     # Write XML to temp file for osm2pgrouting
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
