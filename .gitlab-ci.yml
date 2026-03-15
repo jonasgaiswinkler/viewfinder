@@ -1,5 +1,5 @@
 # see https://docs.gitlab.com/ee/ci/docker/using_docker_build.html#use-docker-socket-binding
-image: docker:24.0.5
+image: docker:latest
 
 # One of the new trends in Continuous Integration/Deployment is to:
 # (see https://docs.gitlab.com/ee/ci/docker/using_docker_build.html)

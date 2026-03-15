@@ -111,6 +111,8 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
         raise RuntimeError("import_ways: Failed to get a response from Overpass API")
 
     response.raise_for_status()  # Raise an error for other bad responses
+
+    logger.debug(f"import_ways: Successfully downloaded OSM data from Overpass API: {response.text}")
     
     # Write XML to temp file for osm2pgrouting
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
@@ -258,6 +260,7 @@ async def _update_tunnel_bridge(
 
     way_tags = _parse_tunnel_bridge_from_osm(osm_path)
     if not way_tags:
+        logger.debug("_update_tunnel_bridge: No ways found in OSM data to update tunnel/bridge info")
         return 0
 
     update_sql = text("""
@@ -342,5 +345,6 @@ def _cleanup_osm_file(osm_path: str) -> None:
     """Remove the temp .osm file after all processing is done."""
     try:
         os.remove(osm_path)
+        logger.debug(f"_cleanup_osm_file: Removed temp OSM file {osm_path}")
     except OSError:
-        pass
+        logger.debug(f"_cleanup_osm_file: Failed to remove temp OSM file {osm_path}")
