@@ -10,13 +10,16 @@ from loguru import logger
 # This makes the `LOG_LEVEL` env var used by loguru in production.
 logger.remove()
 logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO").upper())
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
+from config import OSM_CACHE_ENABLED, OSM_UPDATE_HOUR
 from db import AsyncSessionLocal
 from job_manager import job_manager, JobInfo
+import osm_cache
 from route_solver import compute_scenic_route
 
 # ---------------------------------------------------------------------------
@@ -40,13 +43,43 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
 
 
 # ---------------------------------------------------------------------------
-# Lifespan – start / stop the background job worker
+# Lifespan – start / stop the background job worker and OSM cache scheduler
 # ---------------------------------------------------------------------------
+
+# APScheduler instance for background tasks
+scheduler = AsyncIOScheduler()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start job manager
     job_manager.start()
+    
+    # Initialize OSM cache if enabled
+    if OSM_CACHE_ENABLED:
+        # Schedule daily OSM cache update
+        scheduler.add_job(
+            osm_cache.update_cache,
+            "cron",
+            hour=OSM_UPDATE_HOUR,
+            id="osm_cache_update",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info(f"OSM cache scheduler started, updates at {OSM_UPDATE_HOUR}:00 daily")
+        
+        # Check if cache needs initialization (non-blocking log, actual init is lazy)
+        if not osm_cache.is_cache_available():
+            logger.warning(
+                "OSM cache not available. First request will use Overpass API. "
+                "Run osm_cache.init_cache_if_needed() or wait for scheduled update."
+            )
+    
     yield
+    
+    # Shutdown
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
