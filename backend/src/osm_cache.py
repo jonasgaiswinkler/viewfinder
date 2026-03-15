@@ -161,8 +161,8 @@ def filter_to_railways() -> bool:
     """
     source_path = get_source_path()
     railways_path = get_railways_path()
-    temp_path = railways_path.with_suffix(".pbf.tmp")
-    temp_path_step1 = railways_path.with_suffix(".pbf.step1")
+    temp_path = Path(OSM_DATA_DIR) / "railways.tmp.osm.pbf"
+    temp_path_step1 = Path(OSM_DATA_DIR) / "railways.step1.osm.pbf"
     
     if not source_path.exists():
         logger.warning("osm_cache: Source file not found, cannot filter")
