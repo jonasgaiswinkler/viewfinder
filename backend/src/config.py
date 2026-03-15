@@ -36,14 +36,14 @@ SAMPLING_SPACING_M = _get_sampling_spacing_m()
 
 
 def _get_tile_size_km() -> float:
-    val = os.getenv("VIEWFINDER_TILE_SIZE_KM", "60")
+    val = os.getenv("VIEWFINDER_TILE_SIZE_KM", "50")
     try:
         return float(val)
     except Exception:
-        return 60.0
+        return 50.0
 
 # Public constant for bounding-box tile size (km). Can be set via
-# environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 60)
+# environment variable `VIEWFINDER_TILE_SIZE_KM` (default: 50)
 TILE_SIZE_KM = _get_tile_size_km()
 
 def _get_overpass_max_retries() -> int:
