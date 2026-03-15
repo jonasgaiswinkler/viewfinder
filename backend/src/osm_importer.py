@@ -3,7 +3,7 @@ import platform
 import tempfile
 import subprocess
 import time
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import requests
 import xml.etree.ElementTree as ET
 from sqlalchemy import text
@@ -11,20 +11,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from config import OVERPASS_MAX_RETRIES, OVERPASS_REQUEST_DELAY, OVERPASS_TIMEOUT
+import osm_cache
 
 async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way_type: str) -> None:
-    """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info."""
+    """Download OSM ways and import to Postgres using osm2pgrouting, then update tunnel/bridge info.
+    
+    Uses local OSM cache if available, with fallback to Overpass API.
+    """
+    if way_type != "railway":
+        raise NotImplementedError(f"Way type '{way_type}' is not implemented yet.")
+
+    # Try local cache first
+    osm_path = _try_local_extraction(bounding_box)
+    
+    if osm_path is None:
+        # Fall back to Overpass
+        logger.debug("import_ways: Local cache unavailable, using Overpass API")
+        osm_path = await _fetch_from_overpass(bounding_box)
+    else:
+        logger.debug(f"import_ways: Using local cache extraction: {osm_path}")
+
+    await _cleanup_bounding_box(session, bounding_box)
+
+    await _import_with_pgrouting(
+            session=session,
+            osm_path=osm_path,
+            mapconfig_path="",
+            clean=False,
+        )
+
+
+def _try_local_extraction(bounding_box: Dict[str, float]) -> Optional[str]:
+    """Try to extract from local cache. Returns path to .osm file or None."""
+    if not osm_cache.is_cache_available():
+        return None
+    
+    return osm_cache.extract_bounding_box(bounding_box)
+
+
+async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
+    """Fetch OSM data from Overpass API. Returns path to temp .osm file."""
     min_lat = bounding_box['min_lat']
     min_lon = bounding_box['min_lon']
     max_lat = bounding_box['max_lat']
     max_lon = bounding_box['max_lon']
 
-    if way_type != "railway":
-        raise NotImplementedError(f"Way type '{way_type}' is not implemented yet.")
-    else:
-        way_selector = '["railway"~"^(rail|narrow_gauge)$"]["service"!~"^(yard|siding|spur|crossover)$"]'
+    way_selector = '["railway"~"^(rail|narrow_gauge)$"]["service"!~"^(yard|siding|spur)$"]'
 
-    overpass_url = "https://overpass.private.coffee/api/interpreter"
+    # List of Overpass API mirrors for fallback
+    overpass_servers = [
+        "https://overpass.private.coffee/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
+    ]
+
     overpass_query = f"""
     [out:xml][timeout:{OVERPASS_TIMEOUT}];
     way{way_selector}({min_lat},{min_lon},{max_lat},{max_lon});
@@ -32,104 +71,119 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     out body;
     """
     
-    logger.debug(f"import_ways: Downloading ways with query: {overpass_query}")
+    logger.debug(f"_fetch_from_overpass: Downloading ways with query: {overpass_query}")
     max_retries = OVERPASS_MAX_RETRIES
     delay_seconds = OVERPASS_REQUEST_DELAY
     response = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            # Use POST and send the Overpass query as form-encoded data
-            response = requests.post(
-                overpass_url,
-                data={"data": overpass_query},
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": "ViewFinder (kontakt@jonasgaiswinkler.eu)",
-                },
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                f"import_ways: Overpass request failed on attempt {attempt}/{max_retries}: {exc}"
-            )
-            if attempt == max_retries:
-                raise
-            time.sleep(delay_seconds)
-            continue
-
-        logger.debug(
-            f"import_ways: Overpass API response status code: {response.status_code} (attempt {attempt}/{max_retries})"
-        )
-
-        if response.status_code == 504:
-            logger.warning(
-                f"import_ways: Overpass API returned 504 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
-            )
-            if attempt == max_retries:
-                response.raise_for_status()
-            time.sleep(delay_seconds)
-            continue
-
-        if response.status_code == 429:
-            logger.warning(
-                f"import_ways: Overpass API returned 429 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
-            )
-            if attempt == max_retries:
-                response.raise_for_status()
-            time.sleep(delay_seconds)
-            continue
-
-        # Some successful 200 responses may still indicate a query timeout
-        # (Overpass returns XML with a <remark> element or XHTML error page). Detect that and
-        # treat it as a transient error so we retry like on 504/429.
-        if response.status_code == 200:
+    
+    # Total attempts across all servers
+    total_attempts = 0
+    max_total_attempts = max_retries * len(overpass_servers)
+    
+    for server_idx, overpass_url in enumerate(overpass_servers):
+        for attempt in range(1, max_retries + 1):
+            total_attempts += 1
             try:
-                root = ET.fromstring(response.text)
-                
-                # Check for XHTML error page (runtime error, dispatcher error, etc.)
-                # XHTML is valid XML, so it parses successfully but has <html> root
-                if root.tag == "{http://www.w3.org/1999/xhtml}html" or root.tag == "html":
-                    response_lower = response.text.lower()
-                    if "runtime error" in response_lower or "dispatcher_client" in response_lower:
-                        logger.warning(
-                            f"import_ways: Overpass API returned XHTML error on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
-                        )
-                        if attempt == max_retries:
-                            raise RuntimeError(f"Overpass returned XHTML error: {response.text[:500]}")
-                        time.sleep(delay_seconds)
-                        continue
-                
-                # Check for OSM XML with <remark> indicating timeout
-                remark = root.find("remark")
-                if remark is not None and remark.text:
-                    remark_text = remark.text.strip().lower()
-                    if (
-                        "timed out" in remark_text
-                        or "timeout" in remark_text
-                        or "query timed out" in remark_text
-                        or "runtime error" in remark_text
-                    ):
-                        logger.warning(
-                            f"import_ways: Overpass API returned remark indicating timeout on attempt {attempt}/{max_retries}: {remark_text!r}, retrying in {delay_seconds}s"
-                        )
-                        if attempt == max_retries:
-                            raise RuntimeError(f"Overpass returned timeout remark: {remark_text}")
-                        time.sleep(delay_seconds)
-                        continue
-            except ET.ParseError:
-                # Non-XML body — treat as transient error and retry
-                logger.warning(
-                    f"import_ways: Overpass API returned non-XML response on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                # Use POST and send the Overpass query as form-encoded data
+                response = requests.post(
+                    overpass_url,
+                    data={"data": overpass_query},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": "ViewFinder (kontakt@jonasgaiswinkler.eu)",
+                    },
+                    timeout=OVERPASS_TIMEOUT + 30,  # Allow extra time for network
                 )
-                if attempt == max_retries:
-                    raise RuntimeError(f"Overpass returned non-XML response: {response.text[:500]}")
+            except requests.RequestException as exc:
+                logger.warning(
+                    f"_fetch_from_overpass: Request to {overpass_url} failed on attempt {attempt}/{max_retries}: {exc}"
+                )
+                if total_attempts >= max_total_attempts:
+                    raise
                 time.sleep(delay_seconds)
                 continue
 
-        # Successful (non-504/429 and not an XML timeout remark) response; break
+            logger.debug(
+                f"_fetch_from_overpass: {overpass_url} response status: {response.status_code} (attempt {attempt}/{max_retries})"
+            )
+
+            if response.status_code == 504:
+                logger.warning(
+                    f"_fetch_from_overpass: {overpass_url} returned 504 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                )
+                if total_attempts >= max_total_attempts:
+                    response.raise_for_status()
+                time.sleep(delay_seconds)
+                continue
+
+            if response.status_code == 429:
+                logger.warning(
+                    f"_fetch_from_overpass: {overpass_url} returned 429 on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                )
+                if total_attempts >= max_total_attempts:
+                    response.raise_for_status()
+                time.sleep(delay_seconds)
+                continue
+
+            # Some successful 200 responses may still indicate a query timeout
+            # (Overpass returns XML with a <remark> element or XHTML error page). Detect that and
+            # treat it as a transient error so we retry like on 504/429.
+            if response.status_code == 200:
+                try:
+                    root = ET.fromstring(response.text)
+                    
+                    # Check for XHTML error page (runtime error, dispatcher error, etc.)
+                    # XHTML is valid XML, so it parses successfully but has <html> root
+                    if root.tag == "{http://www.w3.org/1999/xhtml}html" or root.tag == "html":
+                        response_lower = response.text.lower()
+                        if "runtime error" in response_lower or "dispatcher_client" in response_lower:
+                            logger.warning(
+                                f"_fetch_from_overpass: {overpass_url} returned XHTML error on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                            )
+                            if total_attempts >= max_total_attempts:
+                                raise RuntimeError(f"Overpass returned XHTML error: {response.text[:500]}")
+                            time.sleep(delay_seconds)
+                            continue
+                    
+                    # Check for OSM XML with <remark> indicating timeout
+                    remark = root.find("remark")
+                    if remark is not None and remark.text:
+                        remark_text = remark.text.strip().lower()
+                        if (
+                            "timed out" in remark_text
+                            or "timeout" in remark_text
+                            or "query timed out" in remark_text
+                            or "runtime error" in remark_text
+                        ):
+                            logger.warning(
+                                f"_fetch_from_overpass: {overpass_url} returned remark indicating timeout on attempt {attempt}/{max_retries}: {remark_text!r}, retrying in {delay_seconds}s"
+                            )
+                            if total_attempts >= max_total_attempts:
+                                raise RuntimeError(f"Overpass returned timeout remark: {remark_text}")
+                            time.sleep(delay_seconds)
+                            continue
+                except ET.ParseError:
+                    # Non-XML body — treat as transient error and retry
+                    logger.warning(
+                        f"_fetch_from_overpass: {overpass_url} returned non-XML response on attempt {attempt}/{max_retries}, retrying in {delay_seconds}s"
+                    )
+                    if total_attempts >= max_total_attempts:
+                        raise RuntimeError(f"Overpass returned non-XML response: {response.text[:500]}")
+                    time.sleep(delay_seconds)
+                    continue
+
+            # Successful response; break out of both loops
+            break
+        else:
+            # Inner loop completed without break (all attempts failed for this server)
+            # Try next server
+            logger.info(f"_fetch_from_overpass: All attempts failed for {overpass_url}, trying next server")
+            continue
+        # Inner loop broke successfully
         break
 
     if response is None:
-        raise RuntimeError("import_ways: Failed to get a response from Overpass API")
+        raise RuntimeError("_fetch_from_overpass: Failed to get a response from any Overpass server")
 
     response.raise_for_status()  # Raise an error for other bad responses
     
@@ -137,16 +191,8 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     tmp = tempfile.NamedTemporaryFile(suffix=".osm", delete=False, mode="w", encoding="utf-8")
     tmp.write(response.text)
     tmp.close()
-    logger.debug(f"import_ways: Saved OSM XML to {tmp.name}")
-
-    await _cleanup_bounding_box(session, bounding_box)
-
-    await _import_with_pgrouting(
-            session=session,
-            osm_path=tmp.name,
-            mapconfig_path="",
-            clean=False,
-        )
+    logger.debug(f"_fetch_from_overpass: Saved OSM XML to {tmp.name}")
+    return tmp.name
     
 async def _cleanup_bounding_box(
     session: AsyncSession,

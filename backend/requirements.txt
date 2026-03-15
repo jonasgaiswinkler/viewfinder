@@ -15,3 +15,5 @@ sqlalchemy[asyncio]
 asyncpg
 loguru
 uvicorn[standard]
+apscheduler
+osmium

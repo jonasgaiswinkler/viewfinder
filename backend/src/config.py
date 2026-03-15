@@ -78,3 +78,60 @@ def _get_overpass_timeout() -> int:
 # Public constant for Overpass API timeout. Can be set via
 # environment variable `VIEWFINDER_OVERPASS_TIMEOUT` (default: 60)
 OVERPASS_TIMEOUT = _get_overpass_timeout()
+
+
+# ---------------------------------------------------------------------------
+# OSM Local Cache Settings
+# ---------------------------------------------------------------------------
+
+def _get_osm_cache_enabled() -> bool:
+    val = os.getenv("VIEWFINDER_OSM_CACHE_ENABLED", "true")
+    return val.lower() in ("true", "1", "yes")
+
+# Enable/disable local OSM caching. When enabled, uses local .pbf file
+# instead of Overpass API. Set via `VIEWFINDER_OSM_CACHE_ENABLED` (default: true)
+OSM_CACHE_ENABLED = _get_osm_cache_enabled()
+
+
+def _get_osm_data_dir() -> str:
+    return os.getenv("VIEWFINDER_OSM_DATA_DIR", "/data/osm")
+
+# Directory for storing OSM data files. Set via `VIEWFINDER_OSM_DATA_DIR`
+# (default: /data/osm)
+OSM_DATA_DIR = _get_osm_data_dir()
+
+
+def _get_osm_geofabrik_url() -> str:
+    # Default to Europe railways - can be set to a smaller region
+    return os.getenv(
+        "VIEWFINDER_OSM_GEOFABRIK_URL",
+        "https://download.geofabrik.de/europe-latest.osm.pbf"
+    )
+
+# URL for Geofabrik OSM extract. Set via `VIEWFINDER_OSM_GEOFABRIK_URL`
+# (default: europe-latest.osm.pbf)
+OSM_GEOFABRIK_URL = _get_osm_geofabrik_url()
+
+
+def _get_osm_update_hour() -> int:
+    val = os.getenv("VIEWFINDER_OSM_UPDATE_HOUR", "3")
+    try:
+        return int(val)
+    except Exception:
+        return 3
+
+# Hour of day (0-23) to run OSM cache update. Set via
+# `VIEWFINDER_OSM_UPDATE_HOUR` (default: 3)
+OSM_UPDATE_HOUR = _get_osm_update_hour()
+
+
+def _get_osm_stale_days() -> int:
+    val = os.getenv("VIEWFINDER_OSM_STALE_DAYS", "60")
+    try:
+        return int(val)
+    except Exception:
+        return 60
+
+# Number of days after which to consider OSM data stale and re-download
+# instead of applying diffs. Set via `VIEWFINDER_OSM_STALE_DAYS` (default: 60)
+OSM_STALE_DAYS = _get_osm_stale_days()

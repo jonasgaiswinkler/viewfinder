@@ -6,7 +6,7 @@ FROM python:3.12-slim-bookworm AS base
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
-# System dependencies: GDAL, osm2pgrouting, and build tools
+# System dependencies: GDAL, osm2pgrouting, osmium, and build tools
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # GDAL runtime + headers (needed by rasterio / osgeo Python bindings)
@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgdal-dev \
         # osm2pgrouting and its runtime deps (pulls in libpgrouting, boost, …)
         osm2pgrouting \
+        # osmium-tool for local OSM data extraction and filtering
+        osmium-tool \
         # Build tools needed to compile some Python wheels
         gcc \
         g++ \
@@ -49,6 +51,13 @@ COPY config/ ./config/
 # directory.  Mounting a volume here keeps the container layer thin and makes
 # it easy to inspect / persist artefacts between runs.
 VOLUME ["/tmp"]
+
+# ---------------------------------------------------------------------------
+# OSM Cache volume
+# ---------------------------------------------------------------------------
+# Pre-filtered OSM data for fast local bounding-box queries.
+# Mount a persistent volume here to avoid re-downloading on container restart.
+VOLUME ["/data/osm"]
 
 # ---------------------------------------------------------------------------
 # Runtime
