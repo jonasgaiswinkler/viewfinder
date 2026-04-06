@@ -24,10 +24,26 @@
 	let backendUrl = env.PUBLIC_BACKEND_URL ?? '';
 
 	// --- Scenicness style config ---
-	let scenicLow = 0;
-	let scenicHigh = 0.463;
+	let scenicLow = $state(0);
+	let scenicHigh = $state(1);
 	let scenicColor = 'red';
 	let routeColor = '#0066ff';
+
+	// Fetch scenic range from backend
+	async function fetchScenicRange() {
+		try {
+			const res = await fetch(`${backendUrl}/api/scenicness-range`);
+			if (res.ok) {
+				const data = await res.json();
+				scenicLow = data.low;
+				scenicHigh = data.high;
+			}
+		} catch (err) {
+			console.error('Failed to fetch scenicness range:', err);
+		}
+	}
+
+	fetchScenicRange();
 
 	// Helper: interpolate on start_total_value between scenicLow and scenicHigh
 	function scenicInterp(low: unknown, high: unknown): maplibregl.ExpressionSpecification {

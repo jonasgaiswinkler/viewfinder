@@ -18,6 +18,13 @@ CREATE TABLE scenicness_points (
 CREATE INDEX scenicness_points_geom_gix ON scenicness_points USING gist (geom);
 CREATE INDEX scenicness_points_edge_id_idx ON scenicness_points (edge_id);
 
+-- Scenicness Metadata (min/max values, updated on refresh)
+
+CREATE TABLE scenicness_metadata (
+  key TEXT PRIMARY KEY,
+  value DOUBLE PRECISION NOT NULL
+);
+
 -- Scenicness Factors
 
 CREATE TABLE scenicness_factors (
@@ -267,6 +274,17 @@ BEGIN
   DROP TABLE _scenicness_tmp_chain_edges;
   DROP TABLE _scenicness_tmp_chain_geoms;
   DROP TABLE _scenicness_tmp_junctions;
+
+  -- Update metadata with min/max scenic values
+  INSERT INTO scenicness_metadata (key, value)
+  SELECT 'total_value_min', LEAST(MIN(start_total_value), MIN(end_total_value))
+  FROM scenicness_segments
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
+  INSERT INTO scenicness_metadata (key, value)
+  SELECT 'total_value_max', GREATEST(MAX(start_total_value), MAX(end_total_value))
+  FROM scenicness_segments
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 
   RAISE NOTICE 'scenicness_segments table refreshed';
 END;
