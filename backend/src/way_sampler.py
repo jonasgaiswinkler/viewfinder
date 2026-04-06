@@ -95,6 +95,64 @@ async def sample_points_along_ways(
                 CAST(:spacing_m AS numeric)
             ) AS gs(dist_m) ON true
             WHERE length_m > 0
+        ),
+        node_counts AS (
+            -- For each endpoint node of ways in the current set, count how many
+            -- non-tunnel ways in the full network connect to it.
+            SELECT
+                ep.node_id,
+                COUNT(all_w.gid) FILTER (
+                    WHERE COALESCE(all_w.tunnel, FALSE) IS DISTINCT FROM TRUE
+                ) AS non_tunnel_count
+            FROM (
+                SELECT w.source AS node_id
+                FROM ways w
+                WHERE w.gid IN (SELECT gid FROM lengths)
+                UNION
+                SELECT w.target AS node_id
+                FROM ways w
+                WHERE w.gid IN (SELECT gid FROM lengths)
+            ) ep
+            JOIN (
+                SELECT gid, tunnel, source AS node_id FROM ways
+                UNION ALL
+                SELECT gid, tunnel, target AS node_id FROM ways
+            ) all_w ON all_w.node_id = ep.node_id
+            GROUP BY ep.node_id
+        ),
+        open_nodes AS (
+            -- A node is "open" if it is a dead-end or connects only to tunnels,
+            -- i.e. at most one non-tunnel way (the way itself) touches it.
+            SELECT node_id FROM node_counts WHERE non_tunnel_count <= 1
+        ),
+        open_endpoints AS (
+            -- Start endpoint (frac = 0) for ways whose source node is open
+            SELECT
+                l.gid,
+                l.bridge,
+                l.geom_geog,
+                l.length_m,
+                0.0::double precision AS dist_m,
+                0.0::double precision AS frac
+            FROM lengths l
+            JOIN ways w ON w.gid = l.gid
+            WHERE l.length_m > 0
+              AND w.source IN (SELECT node_id FROM open_nodes)
+
+            UNION ALL
+
+            -- End endpoint (frac = 1) for ways whose target node is open
+            SELECT
+                l.gid,
+                l.bridge,
+                l.geom_geog,
+                l.length_m,
+                l.length_m AS dist_m,
+                1.0::double precision AS frac
+            FROM lengths l
+            JOIN ways w ON w.gid = l.gid
+            WHERE l.length_m > 0
+              AND w.target IN (SELECT node_id FROM open_nodes)
         )
         SELECT
             ST_Y(point::geometry) AS lat,
@@ -151,7 +209,64 @@ async def sample_points_along_ways(
                 )
             )
         )
-        ORDER BY s.gid, s.dist_m
+
+        UNION ALL
+
+        SELECT
+            ST_Y(point::geometry) AS lat,
+            ST_X(point::geometry) AS lon,
+            ST_Y(point_next::geometry) - ST_Y(point_prev::geometry) AS tangent_lat,
+            ST_X(point_next::geometry) - ST_X(point_prev::geometry) AS tangent_lon,
+            DEGREES(ST_Azimuth(point_prev, point_next)) AS tangent_azimuth_deg,
+            DEGREES(ST_Azimuth(point_prev_3857, point_next_3857)) AS tangent_azimuth_deg_3857,
+            s.bridge,
+            s.gid AS edge_id,
+            s.frac AS fraction
+        FROM (
+            SELECT
+                oe.gid,
+                oe.dist_m,
+                oe.frac,
+                oe.bridge,
+                ST_LineInterpolatePoint(oe.geom_geog, oe.frac) AS point,
+                ST_LineInterpolatePoint(
+                    oe.geom_geog,
+                    GREATEST(0.0, (oe.dist_m - :tangent_step_m) / oe.length_m)
+                ) AS point_prev,
+                ST_LineInterpolatePoint(
+                    oe.geom_geog,
+                    LEAST(1.0, (oe.dist_m + :tangent_step_m) / oe.length_m)
+                ) AS point_next,
+                ST_Transform(
+                    ST_LineInterpolatePoint(
+                        oe.geom_geog,
+                        GREATEST(0.0, (oe.dist_m - :tangent_step_m) / oe.length_m)
+                    )::geometry,
+                    3857
+                ) AS point_prev_3857,
+                ST_Transform(
+                    ST_LineInterpolatePoint(
+                        oe.geom_geog,
+                        LEAST(1.0, (oe.dist_m + :tangent_step_m) / oe.length_m)
+                    )::geometry,
+                    3857
+                ) AS point_next_3857
+            FROM open_endpoints oe
+        ) AS s
+        WHERE (
+            CAST(:min_lon AS double precision) IS NULL
+            OR ST_Intersects(
+                s.point,
+                ST_MakeEnvelope(
+                    CAST(:min_lon AS double precision),
+                    CAST(:min_lat AS double precision),
+                    CAST(:max_lon AS double precision),
+                    CAST(:max_lat AS double precision),
+                    4326
+                )
+            )
+        )
+        ORDER BY edge_id, fraction
         """
     )
 
