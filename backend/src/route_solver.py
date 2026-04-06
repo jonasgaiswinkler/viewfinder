@@ -417,73 +417,6 @@ route_line AS (
 _SEGMENTS_SQL = f"""
 WITH
 {_ROUTE_LINE_CTE},
-/* ---- tunnel detection ----------------------------------------- */
-tunnel_groups AS (
-    SELECT
-        re.edge_order,
-        re.edge_order
-            - ROW_NUMBER() OVER (ORDER BY re.edge_order) AS grp
-    FROM route_edges re
-    WHERE re.is_tunnel
-),
-tunnel_sections AS (
-    SELECT
-        tg.grp,
-        MIN(tg.edge_order) AS first_edge_order,
-        MAX(tg.edge_order) AS last_edge_order
-    FROM tunnel_groups tg
-    GROUP BY tg.grp
-),
-tunnel_fracs AS (
-    SELECT
-        ts.grp,
-        ts.first_edge_order,
-        ts.last_edge_order,
-        ST_LineLocatePoint(rl.geom, ST_StartPoint(rg_first.geom)) AS start_frac,
-        ST_LineLocatePoint(rl.geom, ST_EndPoint(rg_last.geom))    AS end_frac
-    FROM tunnel_sections ts
-    CROSS JOIN route_line rl
-    JOIN route_geoms rg_first ON rg_first.edge_order = ts.first_edge_order
-    JOIN route_geoms rg_last  ON rg_last.edge_order  = ts.last_edge_order
-),
-tunnel_boundary_points AS (
-    /* entry boundary */
-    SELECT
-        -(tf.grp * 2 + 1)::bigint               AS point_id,
-        ST_LineInterpolatePoint(rl.geom, tf.start_frac) AS point_geom,
-        0.0::float8                              AS edge_frac,
-        tf.first_edge_order                      AS edge_order,
-        TRUE                                     AS forward,
-        COALESCE(re_before.flipped, FALSE)       AS flipped,
-        TRUE                                     AS effective_fwd,
-        0.0::float8                              AS raw_left,
-        0.0::float8                              AS raw_right,
-        tf.start_frac                            AS route_frac,
-        TRUE                                     AS is_tunnel_boundary
-    FROM tunnel_fracs tf
-    CROSS JOIN route_line rl
-    LEFT JOIN route_edges re_before
-        ON re_before.edge_order = tf.first_edge_order - 1
-    UNION ALL
-    /* exit boundary */
-    SELECT
-        -(tf.grp * 2 + 2)::bigint               AS point_id,
-        ST_LineInterpolatePoint(rl.geom, tf.end_frac) AS point_geom,
-        1.0::float8                              AS edge_frac,
-        tf.last_edge_order                       AS edge_order,
-        TRUE                                     AS forward,
-        COALESCE(re_after.flipped, FALSE)        AS flipped,
-        TRUE                                     AS effective_fwd,
-        0.0::float8                              AS raw_left,
-        0.0::float8                              AS raw_right,
-        tf.end_frac                              AS route_frac,
-        TRUE                                     AS is_tunnel_boundary
-    FROM tunnel_fracs tf
-    CROSS JOIN route_line rl
-    LEFT JOIN route_edges re_after
-        ON re_after.edge_order = tf.last_edge_order + 1
-),
-/* ---- scenicness points + tunnel boundaries -------------------- */
 route_points AS (
     SELECT
         sp.id                 AS point_id,
@@ -495,8 +428,7 @@ route_points AS (
         re.effective_fwd,
         COALESCE(SUM(f.weight * pfv.left_value),  0) AS raw_left,
         COALESCE(SUM(f.weight * pfv.right_value), 0) AS raw_right,
-        ST_LineLocatePoint(rl.geom, sp.geom)          AS route_frac,
-        FALSE AS is_tunnel_boundary
+        ST_LineLocatePoint(rl.geom, sp.geom)          AS route_frac
     FROM scenicness_points sp
     CROSS JOIN route_line rl
     JOIN route_edges re ON re.edge_gid = sp.edge_id
@@ -506,20 +438,17 @@ route_points AS (
       AND sp.fraction  IS NOT NULL
     GROUP BY sp.id, sp.geom, sp.fraction,
              re.edge_order, re.forward, re.flipped, re.effective_fwd, rl.geom
-    UNION ALL
-    SELECT * FROM tunnel_boundary_points
 ),
 ordered_points AS (
     SELECT
         rp.*,
         LEAD(rp.point_id)              OVER w AS next_id,
-        LEAD(rp.point_geom)            OVER w AS next_geom,
         LEAD(rp.route_frac)            OVER w AS next_frac,
         LEAD(rp.effective_fwd)         OVER w AS next_effective_fwd,
         LEAD(rp.flipped)               OVER w AS next_flipped,
         LEAD(rp.raw_left)              OVER w AS next_raw_left,
         LEAD(rp.raw_right)             OVER w AS next_raw_right,
-        LEAD(rp.is_tunnel_boundary)    OVER w AS next_is_tunnel_boundary
+        LEAD(rp.edge_order)            OVER w AS next_edge_order
     FROM route_points rp
     WINDOW w AS (ORDER BY rp.route_frac)
 ),
@@ -531,8 +460,6 @@ segments AS (
         o.effective_fwd                                        AS start_eff,
         COALESCE(o.next_effective_fwd, o.effective_fwd)         AS end_eff,
         o.flipped                                              AS start_flipped,
-        o.is_tunnel_boundary                                   AS start_is_tb,
-        COALESCE(o.next_is_tunnel_boundary, FALSE)              AS end_is_tb,
         ST_LineSubstring(
             rl.geom,
             LEAST(o.route_frac, o.next_frac),
@@ -541,7 +468,14 @@ segments AS (
         o.raw_left       AS start_raw_left,
         o.raw_right      AS start_raw_right,
         o.next_raw_left  AS end_raw_left,
-        o.next_raw_right AS end_raw_right
+        o.next_raw_right AS end_raw_right,
+        /* tunnel: any route edge strictly between the two points' edges */
+        EXISTS (
+            SELECT 1 FROM route_edges te
+            WHERE te.is_tunnel
+              AND te.edge_order > o.edge_order
+              AND te.edge_order < COALESCE(o.next_edge_order, o.edge_order)
+        ) AS is_tunnel
     FROM ordered_points o
     CROSS JOIN route_line rl
     WHERE o.next_id IS NOT NULL
@@ -549,7 +483,6 @@ segments AS (
 segments_with_values AS (
     SELECT
         s.*,
-        /* ---- normal (direction-corrected) start point values ---- */
         CASE WHEN s.start_eff THEN s.start_raw_left  ELSE s.start_raw_right END AS n_start_left,
         CASE WHEN s.start_eff THEN s.start_raw_right ELSE s.start_raw_left  END AS n_start_right,
         GREATEST(s.start_raw_left, s.start_raw_right)
@@ -558,7 +491,6 @@ segments_with_values AS (
         CASE WHEN s.start_eff
             THEN s.start_raw_right - s.start_raw_left
             ELSE s.start_raw_left  - s.start_raw_right END                       AS n_start_relative,
-        /* ---- normal (direction-corrected) end point values ---- */
         CASE WHEN s.end_eff THEN s.end_raw_left  ELSE s.end_raw_right END       AS n_end_left,
         CASE WHEN s.end_eff THEN s.end_raw_right ELSE s.end_raw_left  END       AS n_end_right,
         GREATEST(s.end_raw_left, s.end_raw_right)
@@ -575,35 +507,17 @@ SELECT
     sv.end_id,
     ST_AsGeoJSON(sv.geom)::json AS geometry,
     sv.start_flipped AS flipped,
-    (sv.start_is_tb AND sv.end_is_tb) AS is_tunnel,
+    sv.is_tunnel,
 
-    /* ---- start point (with tunnel-boundary correction) ---- */
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.start_is_tb THEN sv.n_end_left
-         ELSE sv.n_start_left END                                  AS start_left_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.start_is_tb THEN sv.n_end_right
-         ELSE sv.n_start_right END                                 AS start_right_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.start_is_tb THEN sv.n_end_total
-         ELSE sv.n_start_total END                                 AS start_total_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.start_is_tb THEN sv.n_end_relative
-         ELSE sv.n_start_relative END                              AS start_relative_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_start_left END        AS start_left_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_start_right END       AS start_right_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_start_total END       AS start_total_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_start_relative END    AS start_relative_value,
 
-    /* ---- end point (with tunnel-boundary correction) ---- */
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.end_is_tb THEN sv.n_start_left
-         ELSE sv.n_end_left END                                    AS end_left_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.end_is_tb THEN sv.n_start_right
-         ELSE sv.n_end_right END                                   AS end_right_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.end_is_tb THEN sv.n_start_total
-         ELSE sv.n_end_total END                                   AS end_total_value,
-    CASE WHEN sv.start_is_tb AND sv.end_is_tb THEN 0
-         WHEN sv.end_is_tb THEN sv.n_start_relative
-         ELSE sv.n_end_relative END                                AS end_relative_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_end_left END          AS end_left_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_end_right END         AS end_right_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_end_total END         AS end_total_value,
+    CASE WHEN sv.is_tunnel THEN 0 ELSE sv.n_end_relative END      AS end_relative_value,
 
     ST_Length(sv.geom::geography)                                   AS length_m
 
