@@ -14,6 +14,7 @@
 
 	import arrowImageUrl from '$lib/assets/arrow.png';
 	import arrowBlueImageUrl from '$lib/assets/arrow_blue.png';
+	import arrowReverseImageUrl from '$lib/assets/arrow_reverse.png';
 
 	let mapStyle =
 		'https://api.maptiler.com/maps/019c19fe-40db-76a8-a85c-b8a711d9f632/style.json?key=OdQtdfaWeZHG7a1SfGoY';
@@ -212,7 +213,7 @@
 					]
 				}}
 			/>
-			<ImageLoader images={{ arrow_blue: arrowBlueImageUrl }}>
+			<ImageLoader images={{ arrow_blue: arrowBlueImageUrl, arrow_reverse: arrowReverseImageUrl }}>
 				<SymbolLayer
 					layout={{
 						'symbol-placement': 'line-center',
@@ -227,6 +228,16 @@
 					}}
 					filter={['!=', ['get', 'is_tunnel'], true]}
 					minzoom={10}
+				/>
+				<SymbolLayer
+					layout={{
+						'icon-image': 'arrow_reverse',
+						'icon-rotation-alignment': 'map',
+						'icon-rotate': ['get', 'heading'],
+						'icon-size': 0.15,
+						'icon-allow-overlap': true
+					}}
+					filter={['==', ['get', 'type'], 'reversal']}
 				/>
 			</ImageLoader>
 		</GeoJSONSource>
