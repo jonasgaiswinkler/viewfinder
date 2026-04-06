@@ -24,14 +24,40 @@
 	let backendUrl = env.PUBLIC_BACKEND_URL ?? '';
 
 	// --- Scenicness style config ---
-	let scenicLow = 0.;
+	let scenicLow = 0;
 	let scenicHigh = 0.463;
 	let scenicColor = 'red';
 	let routeColor = '#0066ff';
 
+	// Helper: interpolate on start_total_value between scenicLow and scenicHigh
+	function scenicInterp(low: unknown, high: unknown): maplibregl.ExpressionSpecification {
+		return ['interpolate', ['linear'], ['get', 'start_total_value'], scenicLow, low, scenicHigh, high] as unknown as maplibregl.ExpressionSpecification;
+	}
+
+	const arrowRotation: maplibregl.ExpressionSpecification =
+		['case', ['>', ['get', 'start_relative_value'], 0], 90, -90] as unknown as maplibregl.ExpressionSpecification;
+
+	const notTunnelFilter: maplibregl.ExpressionSpecification =
+		['!=', ['get', 'is_tunnel'], true] as unknown as maplibregl.ExpressionSpecification;
+
+	const scenicLinePaint = (lowColor: string, highColor: string) => ({
+		'line-opacity': scenicInterp(0, 1),
+		'line-color': scenicInterp(lowColor, highColor),
+		'line-width': scenicInterp(2, 5)
+	});
+
 	// --- Routing state ---
+	interface RouteResult {
+		features: GeoJSON.Feature[];
+		properties: {
+			avg_relative_value: number;
+			avg_total_value: number;
+			total_length_m: number;
+		};
+	}
+
 	let markers: LngLatLike[] = $state([]);
-	let routeResult: any = $state(null);
+	let routeResult = $state<RouteResult | null>(null);
 	let routeLoading = $state(false);
 	let showScenicness = $derived(!routeResult);
 
@@ -74,7 +100,13 @@
 				console.error('Route error:', err);
 				return;
 			}
-			routeResult = await res.json();
+			const data = await res.json();
+			if (!data.properties || !data.features?.length) {
+				console.warn('Route returned no results');
+				routeResult = null;
+			} else {
+				routeResult = data;
+			}
 		} catch (err) {
 			console.error('Route fetch failed:', err);
 		} finally {
@@ -123,40 +155,12 @@
 					'line-color': 'white',
 					'line-width': 2
 				}}
-				sourceLayer={'osm_ways'}
+				sourceLayer="osm_ways"
 			/>
 			<LineLayer
 				layout={{ visibility: scenicnessVisibility }}
-				paint={{
-					'line-opacity': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						0,
-						scenicHigh,
-						1
-					],
-					'line-color': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						'white',
-						scenicHigh,
-						scenicColor
-					],
-					'line-width': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						2,
-						scenicHigh,
-						5
-					]
-				}}
-				sourceLayer={'scenicness_segments'}
+				paint={scenicLinePaint('white', scenicColor)}
+				sourceLayer="scenicness_segments"
 			/>
 			<ImageLoader images={{ arrow: arrowImageUrl }}>
 				<SymbolLayer
@@ -165,17 +169,12 @@
 						'symbol-placement': 'line-center',
 						'icon-image': 'arrow',
 						'icon-rotation-alignment': 'map',
-						'icon-rotate': [
-							'case',
-							['>', ['get', 'start_relative_value'], 0],
-							90,
-							-90
-						],
+						'icon-rotate': arrowRotation,
 						'icon-size': 0.1
 					}}
-					filter={['!=', ['get', 'is_tunnel'], true]}
+					filter={notTunnelFilter}
 					minzoom={10}
-					sourceLayer={'scenicness_segments'}
+					sourceLayer="scenicness_segments"
 				/>
 			</ImageLoader>
 		</VectorTileSource>
@@ -183,35 +182,7 @@
 		<!-- Route result layers (blue style) -->
 		<GeoJSONSource data={routeGeoJSON}>
 			<LineLayer
-				paint={{
-					'line-opacity': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						0.3,
-						scenicHigh,
-						1
-					],
-					'line-color': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						'#b3d4fc',
-						scenicHigh,
-						routeColor
-					],
-					'line-width': [
-						'interpolate',
-						['linear'],
-						['get', 'start_total_value'],
-						scenicLow,
-						2,
-						scenicHigh,
-						5
-					]
-				}}
+				paint={{ ...scenicLinePaint('#b3d4fc', routeColor), 'line-opacity': scenicInterp(0.3, 1) }}
 			/>
 			<ImageLoader images={{ arrow_blue: arrowBlueImageUrl, arrow_reverse: arrowReverseImageUrl }}>
 				<SymbolLayer
@@ -219,14 +190,10 @@
 						'symbol-placement': 'line-center',
 						'icon-image': 'arrow_blue',
 						'icon-rotation-alignment': 'map',
-						'icon-rotate': [
-							'*',
-							['case', ['>', ['get', 'start_relative_value'], 0], 90, -90],
-							['case', ['get', 'flipped'], -1, 1]
-						],
+						'icon-rotate': ['*', arrowRotation, ['case', ['get', 'flipped'], -1, 1]],
 						'icon-size': 0.1
 					}}
-					filter={['!=', ['get', 'is_tunnel'], true]}
+					filter={notTunnelFilter}
 					minzoom={10}
 				/>
 				<SymbolLayer
