@@ -61,8 +61,8 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
 
     # List of Overpass API mirrors for fallback
     overpass_servers = [
-        "https://overpass.private.coffee/api/interpreter",
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
     ]
 
     overpass_query = f"""

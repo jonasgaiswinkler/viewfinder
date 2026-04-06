@@ -312,6 +312,53 @@ async def _build_scenicness_geojson(
             },
         })
 
+    # ---- Reversal point features ----------------------------------------
+    reversal_indices = [
+        i for i in range(1, len(flipped))
+        if flipped[i] != flipped[i - 1]
+    ]
+    if reversal_indices:
+        rev_edge_gids = [edge_gids[i - 1] for i in reversal_indices]
+        rev_forwards = [forwards[i - 1] for i in reversal_indices]
+        rev_result = await session.execute(
+            text("""
+                SELECT
+                    ordinality,
+                    CASE WHEN fwd_val
+                        THEN ST_AsGeoJSON(ST_EndPoint(w.the_geom))::json
+                        ELSE ST_AsGeoJSON(ST_StartPoint(w.the_geom))::json
+                    END AS point_geom,
+                    CASE WHEN fwd_val
+                        THEN degrees(ST_Azimuth(
+                            ST_PointN(w.the_geom, GREATEST(ST_NPoints(w.the_geom) - 1, 1)),
+                            ST_EndPoint(w.the_geom)))
+                        ELSE degrees(ST_Azimuth(
+                            ST_PointN(w.the_geom, LEAST(2, ST_NPoints(w.the_geom))),
+                            ST_StartPoint(w.the_geom)))
+                    END AS exit_heading
+                FROM unnest(
+                    CAST(:rev_edges AS bigint[]),
+                    CAST(:rev_fwds  AS boolean[])
+                ) WITH ORDINALITY AS t(edge_val, fwd_val)
+                JOIN ways w ON w.gid = t.edge_val
+                ORDER BY ordinality
+            """),
+            {"rev_edges": rev_edge_gids, "rev_fwds": rev_forwards},
+        )
+        for row in rev_result.fetchall():
+            geom = row[1]
+            if isinstance(geom, str):
+                geom = json.loads(geom)
+            heading = float(row[2]) if row[2] is not None else 0.0
+            features.append({
+                "type": "Feature",
+                "geometry": geom,
+                "properties": {
+                    "type": "reversal",
+                    "heading": heading,
+                },
+            })
+
     # ---- Compute length-weighted averages ------------------------------
     if total_length > 0:
         avg_left = weighted_left / total_length

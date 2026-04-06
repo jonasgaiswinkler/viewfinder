@@ -16,8 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
+from sqlalchemy import text
+
 from config import OSM_CACHE_ENABLED, OSM_UPDATE_HOUR
-from db import AsyncSessionLocal
+from db import AsyncSessionLocal, init_db
 from job_manager import job_manager, JobInfo
 import osm_cache
 from route_solver import compute_scenic_route
@@ -52,6 +54,9 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Apply DB schema if needed
+    await init_db()
+
     # Start job manager
     job_manager.start()
     
@@ -179,6 +184,20 @@ async def route(request: RouteRequest):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     return result
+
+
+@public_router.get("/scenicness-range")
+async def scenicness_range():
+    """Return the precomputed min and max scenic total values."""
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(text(
+            "SELECT key, value FROM scenicness_metadata "
+            "WHERE key IN ('total_value_min', 'total_value_max')"
+        ))).all()
+    data = {r.key: r.value for r in rows}
+    if 'total_value_min' not in data or 'total_value_max' not in data:
+        raise HTTPException(status_code=404, detail="No scenicness data available")
+    return {"low": data["total_value_min"], "high": data["total_value_max"]}
 
 
 app.include_router(router)

@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pgrouting;
 
 -- Scenicness Points
 
-CREATE TABLE scenicness_points (
+CREATE TABLE IF NOT EXISTS scenicness_points (
     id BIGSERIAL PRIMARY KEY,
     geom GEOMETRY(Point, 4326) NOT NULL,
     bridge BOOLEAN NOT NULL DEFAULT FALSE,
@@ -15,12 +15,19 @@ CREATE TABLE scenicness_points (
     tangent_deg_3857 DOUBLE PRECISION
 );
 
-CREATE INDEX scenicness_points_geom_gix ON scenicness_points USING gist (geom);
-CREATE INDEX scenicness_points_edge_id_idx ON scenicness_points (edge_id);
+CREATE INDEX IF NOT EXISTS scenicness_points_geom_gix ON scenicness_points USING gist (geom);
+CREATE INDEX IF NOT EXISTS scenicness_points_edge_id_idx ON scenicness_points (edge_id);
+
+-- Scenicness Metadata (min/max values, updated on refresh)
+
+CREATE TABLE IF NOT EXISTS scenicness_metadata (
+  key TEXT PRIMARY KEY,
+  value DOUBLE PRECISION NOT NULL
+);
 
 -- Scenicness Factors
 
-CREATE TABLE scenicness_factors (
+CREATE TABLE IF NOT EXISTS scenicness_factors (
   id SMALLSERIAL PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   weight DOUBLE PRECISION NOT NULL
@@ -38,7 +45,7 @@ DO UPDATE SET weight = EXCLUDED.weight;
 
 -- Scenicness Factor Values
 
-CREATE TABLE scenicness_point_factor_values (
+CREATE TABLE IF NOT EXISTS scenicness_point_factor_values (
   point_id BIGINT NOT NULL REFERENCES scenicness_points(id) ON DELETE CASCADE,
   factor_id SMALLINT NOT NULL REFERENCES scenicness_factors(id) ON DELETE CASCADE,
   left_value DOUBLE PRECISION,
@@ -47,10 +54,10 @@ CREATE TABLE scenicness_point_factor_values (
   PRIMARY KEY (point_id, factor_id)
 );
 
-CREATE INDEX scenicness_point_factor_values_point_id_idx
+CREATE INDEX IF NOT EXISTS scenicness_point_factor_values_point_id_idx
   ON scenicness_point_factor_values (point_id);
 
-CREATE INDEX scenicness_point_factor_values_factor_id_idx
+CREATE INDEX IF NOT EXISTS scenicness_point_factor_values_factor_id_idx
   ON scenicness_point_factor_values (factor_id);
 
 -- Refresh function
@@ -267,6 +274,17 @@ BEGIN
   DROP TABLE _scenicness_tmp_chain_edges;
   DROP TABLE _scenicness_tmp_chain_geoms;
   DROP TABLE _scenicness_tmp_junctions;
+
+  -- Update metadata with min/max scenic values
+  INSERT INTO scenicness_metadata (key, value)
+  SELECT 'total_value_min', LEAST(MIN(start_total_value), MIN(end_total_value))
+  FROM scenicness_segments
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
+  INSERT INTO scenicness_metadata (key, value)
+  SELECT 'total_value_max', GREATEST(MAX(start_total_value), MAX(end_total_value))
+  FROM scenicness_segments
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 
   RAISE NOTICE 'scenicness_segments table refreshed';
 END;
