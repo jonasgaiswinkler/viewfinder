@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import asyncpg
 from dotenv import load_dotenv
 import os
 from loguru import logger
@@ -34,3 +37,27 @@ Base = declarative_base()
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
+
+
+DB_INIT_SQL_PATH = Path(__file__).resolve().parent.parent / "db_init.sql"
+
+
+async def init_db():
+    """Apply db_init.sql on every startup (all statements are idempotent)."""
+    if not DB_INIT_SQL_PATH.exists():
+        logger.warning(f"db_init.sql not found at {DB_INIT_SQL_PATH}, skipping DB init")
+        return
+
+    conn = await asyncpg.connect(
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+        database=POSTGRES_DB,
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+    )
+    try:
+        sql = DB_INIT_SQL_PATH.read_text(encoding="utf-8")
+        await conn.execute(sql)
+        logger.info("Database schema applied from db_init.sql")
+    finally:
+        await conn.close()

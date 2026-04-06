@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from config import OSM_CACHE_ENABLED, OSM_UPDATE_HOUR
-from db import AsyncSessionLocal
+from db import AsyncSessionLocal, init_db
 from job_manager import job_manager, JobInfo
 import osm_cache
 from route_solver import compute_scenic_route
@@ -54,6 +54,9 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Apply DB schema if needed
+    await init_db()
+
     # Start job manager
     job_manager.start()
     
