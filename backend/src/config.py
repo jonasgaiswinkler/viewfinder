@@ -85,11 +85,11 @@ OVERPASS_TIMEOUT = _get_overpass_timeout()
 # ---------------------------------------------------------------------------
 
 def _get_osm_cache_enabled() -> bool:
-    val = os.getenv("VIEWFINDER_OSM_CACHE_ENABLED", "true")
+    val = os.getenv("VIEWFINDER_OSM_CACHE_ENABLED", "false")
     return val.lower() in ("true", "1", "yes")
 
 # Enable/disable local OSM caching. When enabled, uses local .pbf file
-# instead of Overpass API. Set via `VIEWFINDER_OSM_CACHE_ENABLED` (default: true)
+# instead of Overpass API. Set via `VIEWFINDER_OSM_CACHE_ENABLED` (default: false)
 OSM_CACHE_ENABLED = _get_osm_cache_enabled()
 
 
