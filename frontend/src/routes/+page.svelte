@@ -172,6 +172,7 @@
 						],
 						'icon-size': 0.1
 					}}
+					filter={['!=', ['get', 'is_tunnel'], true]}
 					minzoom={10}
 					sourceLayer={'scenicness_segments'}
 				/>
@@ -224,6 +225,7 @@
 						],
 						'icon-size': 0.1
 					}}
+					filter={['!=', ['get', 'is_tunnel'], true]}
 					minzoom={10}
 				/>
 			</ImageLoader>
