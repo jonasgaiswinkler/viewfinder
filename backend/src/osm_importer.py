@@ -1,3 +1,4 @@
+import asyncio
 import os
 import platform
 import tempfile
@@ -21,8 +22,8 @@ async def import_ways(session: AsyncSession, bounding_box: Dict[str, float], way
     if way_type != "railway":
         raise NotImplementedError(f"Way type '{way_type}' is not implemented yet.")
 
-    # Try local cache first
-    osm_path = _try_local_extraction(bounding_box)
+    # Try local cache first (blocking subprocess → run in thread)
+    osm_path = await asyncio.to_thread(_try_local_extraction, bounding_box)
     
     if osm_path is None:
         # Fall back to Overpass
@@ -85,14 +86,17 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
             total_attempts += 1
             try:
                 # Use POST and send the Overpass query as form-encoded data
-                response = requests.post(
-                    overpass_url,
-                    data={"data": overpass_query},
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "User-Agent": "ViewFinder (kontakt@jonasgaiswinkler.eu)",
-                    },
-                    timeout=OVERPASS_TIMEOUT + 30,  # Allow extra time for network
+                # Blocking HTTP call → run in thread to avoid freezing the event loop
+                response = await asyncio.to_thread(
+                    lambda: requests.post(
+                        overpass_url,
+                        data={"data": overpass_query},
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "User-Agent": "ViewFinder (kontakt@jonasgaiswinkler.eu)",
+                        },
+                        timeout=OVERPASS_TIMEOUT + 30,  # Allow extra time for network
+                    )
                 )
             except requests.RequestException as exc:
                 logger.warning(
@@ -100,7 +104,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                 )
                 if total_attempts >= max_total_attempts:
                     raise
-                time.sleep(delay_seconds)
+                await asyncio.sleep(delay_seconds)
                 continue
 
             logger.debug(
@@ -113,7 +117,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                 )
                 if total_attempts >= max_total_attempts:
                     response.raise_for_status()
-                time.sleep(delay_seconds)
+                await asyncio.sleep(delay_seconds)
                 continue
 
             if response.status_code == 429:
@@ -122,7 +126,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                 )
                 if total_attempts >= max_total_attempts:
                     response.raise_for_status()
-                time.sleep(delay_seconds)
+                await asyncio.sleep(delay_seconds)
                 continue
 
             # Some successful 200 responses may still indicate a query timeout
@@ -142,7 +146,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                             )
                             if total_attempts >= max_total_attempts:
                                 raise RuntimeError(f"Overpass returned XHTML error: {response.text[:500]}")
-                            time.sleep(delay_seconds)
+                            await asyncio.sleep(delay_seconds)
                             continue
                     
                     # Check for OSM XML with <remark> indicating timeout
@@ -160,7 +164,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                             )
                             if total_attempts >= max_total_attempts:
                                 raise RuntimeError(f"Overpass returned timeout remark: {remark_text}")
-                            time.sleep(delay_seconds)
+                            await asyncio.sleep(delay_seconds)
                             continue
                 except ET.ParseError:
                     # Non-XML body — treat as transient error and retry
@@ -169,7 +173,7 @@ async def _fetch_from_overpass(bounding_box: Dict[str, float]) -> str:
                     )
                     if total_attempts >= max_total_attempts:
                         raise RuntimeError(f"Overpass returned non-XML response: {response.text[:500]}")
-                    time.sleep(delay_seconds)
+                    await asyncio.sleep(delay_seconds)
                     continue
 
             # Successful response; break out of both loops
@@ -395,7 +399,8 @@ async def _import_with_pgrouting(
         cmd.append("--clean")
 
     logger.debug(f"import_with_pgrouting: Running osm2pgrouting")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Blocking subprocess → run in thread to avoid freezing the event loop
+    result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"osm2pgrouting failed (code {result.returncode}):\n{result.stderr}"
