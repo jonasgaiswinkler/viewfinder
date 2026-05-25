@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		AttributionControl,
+		FillLayer,
 		GeoJSONSource,
 		ImageLoader,
 		LineLayer,
@@ -15,6 +16,7 @@
 	import arrowImageUrl from '$lib/assets/arrow.png';
 	import arrowBlueImageUrl from '$lib/assets/arrow_blue.png';
 	import arrowReverseImageUrl from '$lib/assets/arrow_reverse.png';
+	import JobPanel from '$lib/components/JobPanel.svelte';
 
 	let mapStyle =
 		'https://api.maptiler.com/maps/019c19fe-40db-76a8-a85c-b8a711d9f632/style.json?key=OdQtdfaWeZHG7a1SfGoY';
@@ -91,6 +93,17 @@
 	);
 
 	function handleMapClick(e: maplibregl.MapMouseEvent) {
+		if (drawingMode === 'first-click') {
+			bboxStart = [e.lngLat.lng, e.lngLat.lat];
+			drawingMode = 'second-click';
+			return;
+		}
+		if (drawingMode === 'second-click') {
+			bboxEnd = [e.lngLat.lng, e.lngLat.lat];
+			mousePos = null;
+			drawingMode = 'done';
+			return;
+		}
 		const lngLat: LngLatLike = [e.lngLat.lng, e.lngLat.lat];
 		markers = [...markers, lngLat];
 
@@ -135,6 +148,63 @@
 		routeResult = null;
 	}
 
+	// --- Bbox drawing state (for job creation) ---
+	let drawingMode = $state<'none' | 'first-click' | 'second-click' | 'done'>('none');
+	let bboxStart = $state<[number, number] | null>(null);
+	let bboxEnd = $state<[number, number] | null>(null);
+	let mousePos = $state<[number, number] | null>(null);
+
+	function onStartDrawing() {
+		drawingMode = 'first-click';
+		bboxStart = null;
+		bboxEnd = null;
+		mousePos = null;
+	}
+
+	function onCancelDrawing() {
+		drawingMode = 'none';
+		bboxStart = null;
+		bboxEnd = null;
+		mousePos = null;
+	}
+
+	function handleMapMouseMove(e: maplibregl.MapMouseEvent) {
+		if (drawingMode === 'second-click') {
+			mousePos = [e.lngLat.lng, e.lngLat.lat];
+		}
+	}
+
+	// Live preview of the bounding box being drawn
+	let bboxGeoJSON: GeoJSON.FeatureCollection = $derived.by(() => {
+		const end = bboxEnd ?? (drawingMode === 'second-click' ? mousePos : null);
+		if (!bboxStart || !end) return emptyGeoJSON;
+		const minLon = Math.min(bboxStart[0], end[0]);
+		const maxLon = Math.max(bboxStart[0], end[0]);
+		const minLat = Math.min(bboxStart[1], end[1]);
+		const maxLat = Math.max(bboxStart[1], end[1]);
+		return {
+			type: 'FeatureCollection',
+			features: [
+				{
+					type: 'Feature',
+					geometry: {
+						type: 'Polygon',
+						coordinates: [
+							[
+								[minLon, minLat],
+								[maxLon, minLat],
+								[maxLon, maxLat],
+								[minLon, maxLat],
+								[minLon, minLat]
+							]
+						]
+					},
+					properties: {}
+				}
+			]
+		};
+	});
+
 	// Determine which side is recommended from the route result
 	let recommendedSide: string = $derived.by(() => {
 		if (!routeResult?.properties) return '';
@@ -145,7 +215,7 @@
 	});
 </script>
 
-<div class="map-container">
+<div class="map-container" class:drawing-mode={drawingMode !== 'none'}>
 	<MapLibre
 		class="h-screen"
 		style={mapStyle}
@@ -153,6 +223,7 @@
 		center={[10.0539, 46.5645]}
 		zoom={9}
 		onclick={handleMapClick}
+		onmousemove={handleMapMouseMove}
 	>
 		<AttributionControl compact={true} position="bottom-right" customAttribution={attribution}
 		></AttributionControl>
@@ -195,6 +266,14 @@
 			</ImageLoader>
 		</VectorTileSource>
 
+		<!-- Bbox drawing preview -->
+		<GeoJSONSource data={bboxGeoJSON}>
+			<FillLayer paint={{ 'fill-color': '#4488ff', 'fill-opacity': 0.15 }} />
+			<LineLayer
+				paint={{ 'line-color': '#4488ff', 'line-width': 2, 'line-dasharray': [4, 2] }}
+			/>
+		</GeoJSONSource>
+
 		<!-- Route result layers (blue style) -->
 		<GeoJSONSource data={routeGeoJSON}>
 			<LineLayer
@@ -225,6 +304,16 @@
 			</ImageLoader>
 		</GeoJSONSource>
 	</MapLibre>
+
+	<!-- Job management panel -->
+	<JobPanel
+		{backendUrl}
+		{drawingMode}
+		{bboxStart}
+		{bboxEnd}
+		{onStartDrawing}
+		{onCancelDrawing}
+	/>
 
 	<!-- UI overlay -->
 	{#if markers.length > 0}
@@ -268,10 +357,15 @@
 		position: relative;
 	}
 
+	/* Crosshair cursor while drawing a bounding box */
+	.drawing-mode :global(.maplibregl-canvas) {
+		cursor: crosshair !important;
+	}
+
 	.overlay-panel {
 		position: absolute;
 		top: 10px;
-		left: 10px;
+		right: 10px;
 		background: rgba(0, 0, 0, 0.75);
 		padding: 12px 16px;
 		border-radius: 8px;
