@@ -1,93 +1,243 @@
-# viewfinder
+# ViewFinder
 
+![image.png](images/image.png)
+*Copyright: Genildo Ronchi*
 
+A service that can estimate the best side to sit on, given any route, so you get the best views.
 
-## Getting started
+# Feature ideas
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- Works for any land-based type of transportation (trains, buses, …)
+- Estimates an overall recommendation and a detailed analysis for every section of the route
+- Gives a short summary of the most interesting things to see along the route
+- Takes multiple factors into account (such as elevation, water, …)
+- User customizable preferences
+- API for easy integration with trip routing services
+- Web-based UI
+- Pre-calculated estimates for an overview map that shows the most scenic train routes and the side you should sit on
+- Takes into account direction changes of trains
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+# What makes a view scenic?
 
-## Add your files
+## Research
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Let’s start by looking at the most beautiful train journeys in the world and identifying what makes them scenic.
 
-```
-cd existing_repo
-git remote add origin https://git.jpg-fdms.eu/jpg/viewfinder.git
-git branch -M main
-git push -uf origin main
-```
+- Visp-Zermatt
+    - View most beautiful depending on the side of the valley the train runs on
+- Albula line
+    - Landwasser viaduct most important landmark, is preceded by track curve where you should sit on the inner side of the curve
+    - Many spiral tracks, where there is no clear better side because the train reverses direction
+- Bernina line
+    - Train runs alongside lake
+    - View of big mountains
+    - Descend at Alp Grüm has best views of the valley at higher altitudes
+    - Circular viaduct is most scenic on the inside of the curve
+- West Highland line
+    - Train runs in valley and along Lochs
+    - Glenfinnan Viaduct most scenic on the inner side of the curve
+- Nova Gorica - Jesenice
+    - Train runs in valley along river
+- Cannes - Menton
+    - Most scenic when sitting on the side of the Mediterranean
+- Bergensbanen
+    - Views of the Fjord
+    - Lakes/Valleys
+- Inlandabanan
+    - Runs mainly through woods, no clear better side
+- Centovalli line
+    - Valleys and lake
+    - Beautiful views of Intragna in curve with viaduct
+- Golden Pass
+    - Best views on descent to Lake Geneva
+- Tokaido Shinkansen
+    - Most scenic view is of Mount Fuji
 
-## Integrate with your tools
+## Main factors
 
-- [ ] [Set up project integrations](https://git.jpg-fdms.eu/jpg/viewfinder/-/settings/integrations)
+Based on the reseach, I identified the following main factors that decide how scenic a route is.
 
-## Collaborate with your team
+### Factor 1: Elevation left and right of the route
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Scenic routes often run alongside hills, where the elevation is usually falling on one side and rising on the other side. In this case it is preferable to sit on the side of the falling elevation, because it enables a high visibility, whereas the other side does not because you are looking at terrain. The larger the drop in elevation, the more beautiful the view is. This can also be expressed in another way: how much area is visible and how far you can see.
 
-## Test and Deploy
+![image.png](images/image%201.png)
 
-Use the built-in continuous integration in GitLab.
+### Factor 2: Large mountains
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Large mountains can make very scenic views. There can by falling elevation in front of the mountain, a valley, which makes the view even more picturesque. This can be measured by the difference in elevation and the highest elevation in the field of view.
 
-***
+![image.png](images/image%202.png)
 
-# Editing this README
+### Factor 3: Bodies of water
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+When trains run next to water (rivers, lakes or the sea), it is usually preferable to sit on the side of the water. The bigger the body of water, the more scenic the view is. You can also extend this to other land cover types, like forest or grassland.
 
-## Suggestions for a good README
+![image.png](images/image%203.png)
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### Factor 4: Important landmarks
 
-## Name
-Choose a self-explaining name for your project.
+Important landmarks like castles provide pretty views.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+![image.png](images/image%204.png)
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### Factor 5: Bridges in combination with curves
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+On straight tracks bridges are usually not visible, however, when there are curves in the vicinity, the bridge itself (and the vehicle on the bridge, depending on vehicle set length) can be visible on the inner side of the curve.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+![image.png](images/image%205.png)
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Factor 6: Being able to see the line you just travelled on
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+U-turns and circular tracks enable views of the line you just travelled on, with the possibility of seeing other trains.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### Factor 7: Parallel lines
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Two lines running in parallel might enable views of trains running side by side in the same direction.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+## Calculation method
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+The end goal is to produce a binary output (left or right) for an entire route. Because there are multiple factors that determine how nice a view is and many different views along the route, there have to be weights that affect how much each individual component affects the end result.
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+$S : \text{Scenicness} \\
+i : \text{Factor},i \in \{1,2,3,\ldots\}\\
+w_i : \text{Factor weight} \\
+p : \text{Point along the route} \\
+s : \text{Side}, s \in \{L,R\} \\
+s^* : \text{Optimal side}$
 
-## License
-For open source projects, say how it is licensed.
+### Absolute scenicness
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+For every factor the absolute scenicness on both sides is evaluated, with 0 being not scenic at all and 1 being the most beautiful view imaginable.
+
+$$
+0 \le S_{p,s,i} \le 1
+$$
+
+### Factor weights
+
+The absolute scenicness of each factor is multiplied by the factor weights and summed up to create a total scenicness for each side.
+
+$$
+\sum^n_{i=1} w_i = 1
+$$
+
+$$
+S_{p,s} = \sum^{n}_{i=1} S_{p,s,i}w_{i}
+$$
+
+### Total scenicness
+
+The total scenicness describes the absolute scenicness of the entire route. It is mainly determined by the best side per point along the route.
+
+$$
+S_{\text{p total}} = \max\{S_{p,L}, S_{p,R}\} - (\frac{\max\{S_{p,L}, S_{p,R}\} - \min\{S_{p,L}, S_{p,R}\}}{10})
+$$
+
+$$
+S_{\text{total}} = \frac{1}{n} \sum^{n}_{p=1} S_{\text{p total}}
+$$
+
+### Relative scenicness
+
+If the views on both sides are equally good or bad, this point on the route should not have a big influence on the total, whereas points where there is a clearly superior side should.
+
+$$
+S_{p\text{,rel}} = S_{p,R}-S_{p,L}
+$$
+
+### Optimal side
+
+The optimal side can be determined by calculating the average of the relative scenicness, where values closer to 1 are right and values closer to -1 left.
+
+$$
+S_{\text{rel,total}} = \frac{1}{n} \sum^{n}_{p=1} S_{p\text{ rel}}
+$$
+
+$$
+s^* =
+\begin{cases}
+L & \text{if } S_{\text{rel,total}} < 0 \\
+R & \text{if } S_{\text{rel,total}} \ge 0
+\end{cases}
+$$
+
+# Technical architecture
+
+ViewFinder on a technical level consists of three components: a backend for precalculating the scenicness and querying the scenicness of a route with APIs, a database to store computed scenicness, and a frontend for users to select a route and visualize the result of the algorithm. The backend can be used standalone for integration with existing routing services.
+
+## Backend
+
+### Tech stack
+
+- Python
+    - FastAPI
+- OSM Overpass API
+- AWS Compernicus DEM 90m
+- GDAL viewshed
+
+### Precomputing scenicness
+
+Computing the scenicness of a route on-demand is not feasable because of the large size of the DEM and the computing time needed for the line-of-sight/viewshed analysis. Therefore, an API is provided that precomputes the scenicness of all railway lines/paths in a given bounding box and saves the compiled scenicness values in a database.
+
+These are the steps to precompute the scenicness:
+
+1. Getting lines/paths from the OSM Overpass API
+2. Sample points on the lines/path
+3. Download the DEM for the bounding box
+4. Run the viewshed analysis for the samples points on the DEM
+5. Slice the result of the viewshed analysis in left/right of the line
+6. Compute the factors for scenicness
+7. Save the results to the database
+8. Segment from sampled points so scenicness segments
+
+### Line-of-sight/viewshed analysis
+
+One step is to make a line-of-sight/viewshed analysis from points along the polyline (excluding tunnel segments) using a digital elevation model (DEM). The goal is to compute the visible area on both sides of the polyline.
+
+[gdal_viewshed — GDAL  documentation](https://gdal.org/en/stable/programs/gdal_viewshed.html)
+
+[r.viewshed - GRASS GIS manual](https://grass.osgeo.org/grass-stable/manuals/r.viewshed.html)
+
+Viewshed settings
+
+- Height of observer: 2,5 m
+    - Asuming the DEM is at the height of the rail superstructure/ballast, the height of the observer consist of
+        - the height of the rail (0,17 m)
+        - the height from the top of the rail to the train floor (0,6 - 1,25 m, depending on the type of train)
+        - the height of the eyes of a sitting person (~1,3 m)
+    - That results in a value between 2,07 and 2,72 m
+- Height of target: 0 m
+
+🚧 TODO: Handle bridges
+
+### Routing
+
+A routing request takes the following inputs:
+
+- Array of coordinates OR polyline (🚧 TODO: How to properly handle requests with existing polylines from routing services like MOTIS)
+
+and produces the following output:
+
+- Segmented polyline
+    - Coordinates
+    - Elevation
+    - Is Tunnel
+    - Is Bridge
+    - Reversing/direction change
+
+This is done using OSM.
+
+## Database
+
+### Tech stack
+
+- PostgreSQL with PostGIS
+
+## Frontend
+
+### Tech stack
+
+- SvelteKit
+- TailwindCSS
+- MapLibre
