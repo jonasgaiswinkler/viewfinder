@@ -1,6 +1,7 @@
 # ViewFinder
 
 ![image.png](images/image.png)
+
 *Copyright: Genildo Ronchi*
 
 A service that can estimate the best side to sit on, given any route, so you get the best views.
