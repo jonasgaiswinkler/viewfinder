@@ -176,6 +176,7 @@ ViewFinder on a technical level consists of three components: a backend for prec
 - OSM Overpass API
 - AWS Compernicus DEM 90m
 - GDAL viewshed
+- Tegola
 
 ### Precomputing scenicness
 
@@ -233,7 +234,7 @@ This is done using OSM.
 
 ### Tech stack
 
-- PostgreSQL with PostGIS
+- PostgreSQL with PostGIS and pgRouting
 
 ## Frontend
 
