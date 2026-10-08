@@ -54,6 +54,28 @@ services:
       - caddy_caddy
     environment:
       - PUBLIC_TEGOLA_URL=https://viewfinder.jonasgaiswinkler.eu
+  viewfinder_backend:
+    restart: always
+    container_name: viewfinder_backend
+    depends_on:
+      viewfinder_db:
+        condition: service_healthy
+    image: registry.jpg-fdms.eu/jpg/viewfinder/backend
+    ports:
+      - 9997:8000
+    volumes:
+      - ${VIEWFINDER_LOCATION}/data/osm:/data/osm
+    networks:
+      - caddy_caddy
+      - viewfinder
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=${DB_HOST}
+      - POSTGRES_PORT=${DB_PORT}
+      - VIEWFINDER_OVERPASS_TIMEOUT=120
+      - VIEWFINDER_TILE_SIZE_KM=100
+      - VIEWFINDER_OSM_CACHE_ENABLED=true
 networks:
   viewfinder: {}
   caddy_caddy:
